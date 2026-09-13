@@ -12,6 +12,10 @@
 > 文中标 ⚠️ 的条目是**未经实测的假设**，必须先验证再进入实现；标 ✅ 的是已在
 > 本机 `D:\dsharness\sof\deepseek-harness`（分支 `v0.1.3`）源码中**核实过**的事实。
 
+> **修订记录**：`2026-09-14` — 整合产品经理确认的决策（D1/D2/D3/D7、命令名统一为
+> 五条、连接测试调整、AGE 否决）；被否决内容以「✗ 已否决（2026-09-14）」标注，
+> 决策明细见 §13。
+
 ---
 
 ## 1. 背景与目标
@@ -63,11 +67,8 @@ type CompactionTrigger = 'pressure' | 'context-overflow'
 把记忆作为独立注入项插入（`compactNow()` 明确说明「可在待处理 prompt 之前 flush，使
 后续 prompt 基于新 surface 派生」）。这样与官方压缩**协同**而非竞争。
 
-> **决策点 D1**：v1 是先做「命令显式注入」（低风险、可控），还是直接做「pressure 自动
-> 注入」？建议 v1 先做显式 + 一个手动 `compactNow` 触发路径，v2 再接自动。
-
-
-✅ 产品经理决策点1决策: v1 先做显式 + 一个手动 `compactNow` 触发路径
+> **决策点 D1**（✅ 已确认 `2026-09-14`）：v1 先做「命令显式注入」+ 一个手动 `compactNow`
+> 触发路径；pressure 自动注入推迟到 v2。
 
 
 ---
@@ -80,18 +81,13 @@ type CompactionTrigger = 'pressure' | 'context-overflow'
 - `load` = **把记忆整体注入当前上下文**（有副作用：占用 token、改变后续行为）
 - `search` = **只查询并展示**，不注入（只读、零副作用）
 
-✅ 已确认作用域决策（本次澄清）：**记忆按 workspace 隔离、跨会话共享**。因此表结构需要
+✅ 已确认作用域决策（`2026-09-14`）：**记忆按 workspace 隔离、跨会话共享**。因此表结构需要
 `workspace_id` 维度，检索默认搜整个 workspace 池，可选收窄到当前 session。
 
-> 这也意味着 `load` 的措辞应改为「重新加载**本项目**的记忆」，而不是「本对话」。
-
-
-
-
-✅  产品经理疑问点1处理:
-1. `load` 的措辞应改为「重新加载**本项目**的记忆」，而不是「本对话」
-2. `load` = **把记忆整体注入当前上下文**
-3. `search` = **只查询并展示**，不注入,只读,查询历史用
+> **疑问点 1 处理（✅ 已确认 `2026-09-14`）**：
+> 1. `load` 的措辞改为「重新加载**本项目**的记忆」，而不是「本对话」
+> 2. `load` = **把记忆整体注入当前上下文**（有副作用）
+> 3. `search` = **只查询并展示**，不注入、只读、查询历史用
 
 
 ---
@@ -99,14 +95,15 @@ type CompactionTrigger = 'pressure' | 'context-overflow'
 **③ ⚠️ 命令名有拼写错误 + 命名不一致，且命令需要「结构化输入」**
 
 原需求里 `/mermory_pg_save` 是 `memory` 的拼写错误（`mermory`）。同时三个命令前缀不统一。
-建议统一为：
+产品经理已确认（`2026-09-14`）统一为**五条命令**：
 
-| 原需求 | 建议命名 | 说明 |
+| 原需求 | 最终命名（已确认） | 说明 |
 |---|---|---|
-| `/memory_pg_ex` | `/memory-pg-compact`（⚠️ 连字符待 M0 实测，不行则用 `_`） | 见下方 ④，这个命令的定位需要重新考虑 |
-| `/mermory_pg_save` | `/memory-pg-save`（同上） | 提炼事实 + 语义分割 + 入库 |
-| `/mermory_pg_load` | `/memory-pg-load`（同上） | 注入记忆到上下文 |
-| `/mermory_pg_search` | `/memory-pg-search`（同上） | 只读检索 |
+| `/memory_pg_ex` | `/memory-pg-compact` | 只生成一份记忆文件（md），提炼事实，**由用户决定是否保存** |
+| `/mermory_pg_save` | `/memory-pg-save` | 语义分割 + 入库 |
+| —（新增） | `/memory-pg-compact-save` | **不经过用户确认**：直接完成 提炼事实 + 语义分割 + 入库 |
+| `/mermory_pg_load` | `/memory-pg-load` | 注入记忆到上下文 |
+| `/mermory_pg_search` | `/memory-pg-search` | 只读检索 |
 
 ✅ 核实（`packages/interaction/commands/src/types.ts:58`）：契约原文是 "Lowercase command
 name without the leading slash"——**只承诺小写、不含前导斜杠**，**没有**承诺连字符可用。
@@ -120,21 +117,7 @@ name without the leading slash"——**只承诺小写、不含前导斜杠**，
 `{ kind: 'success', text? }` 或 `{ kind: 'error', text }`，由 UI 直接渲染——无需走模型。
 ⚠️ 但自由输入与命令名的**切分边界**仍需实测（与上面的连字符问题一起在 M0 验证）。
 
-
-
-✅  产品经理问题点1处理:
-`/memory_pg_ex` 改为  `/memory-pg-compact`
-`/mermory_pg_save` 改为 `/memory-pg-save`
-`/mermory_pg_load`  改为 `/memory-pg-load`
-`/mermory_pg_search`  改为 `/memory-pg-search`
-
-
-
-✅  产品经理决策点 D2处理:
-`/memory-pg-compact` 改为只生成一份记忆文件, 提炼事实, 由用户决定是否保存
-用`/memory-pg-save` 语义分割 + 入库
-新增  `/memory-pg-compact-save` 用于不经过用户确认, 直接 完成 提炼事实 + 语义分割 + 入库  入库的操作
-
+> 命令命名与分工（问题点 1 + 决策点 D2）已确认，见上方表格与 §13 决策记录。
 
 ---
 
@@ -144,15 +127,11 @@ name without the leading slash"——**只承诺小写、不含前导斜杠**，
 出口不同**。若各写一套，会产生两套 prompt、两套质量标准和两处维护成本。
 
 建议改为**一次提炼、两个出口**：`compact` 产出结构化对象，既可渲染成 md，也可切分入库。
-是否保留 md 导出作为独立命令，取决于你是否真的需要「给人看的文档」这个交付物。
 
-> **决策点 D2**：md 导出是**独立命令**，还是 `save` 的一个参数（如 `--md`）？
-
-
-✅  产品经理决策点 D2处理: 如上
-`/memory-pg-compact` 改为只生成一份记忆文件, 提炼事实, 由用户决定是否保存
-用`/memory-pg-save` 语义分割 + 入库
-新增  `/memory-pg-compact-save` 用于不经过用户确认, 直接 完成 提炼事实 + 语义分割 + 入库  入库的操作
+> **决策点 D2**（✅ 已确认 `2026-09-14`）：md 导出**拆成独立命令** `/memory-pg-compact`
+> （只生成记忆文件，由用户决定是否保存）；`/memory-pg-save` 只做语义分割 + 入库；
+> 另新增 `/memory-pg-compact-save` 免确认一键完成 提炼 + 分割 + 入库。
+> 即：**一次提炼逻辑，三个出口**（md 文件 / 分割入库 / 免确认全流程）。
 
 
 
@@ -171,10 +150,9 @@ name without the leading slash"——**只承诺小写、不含前导斜杠**，
 具体的图查询用例**再引入（例如「这个 bug 和哪些历史问题共享同一个根因模块」）。
 若坚持 v1 上 AGE，则 §5 里程碑 M1 必须包含 AGE 的连通性与连接池实测。
 
-> **决策点 D3**：v1 是否真的需要 AGE？（建议：不需要）
-
-✅  产品经理决策点 D3处理: 
-不额外增加工作, 不增加AGE
+> **决策点 D3**（✅ 已确认 `2026-09-14`）：**不增加 AGE**，不额外增加工作。
+> ✗ 已否决（2026-09-14）：AGE 图方案（连接池 `search_path` 坑 + 收益未证）；
+> 若未来有具体图查询用例再单独评审。
 
 
 ---
@@ -185,7 +163,7 @@ name without the leading slash"——**只承诺小写、不含前导斜杠**，
 
 1. TCP/认证连通（`SELECT 1`）
 2. **pgvector 扩展可用**（`SELECT extversion FROM pg_extension WHERE extname='vector'`）
-( 产品经理决策: 不测试 )3. **AGE 扩展可用**（若启用，同理）
+3. ~~**AGE 扩展可用**（若启用，同理）~~ → ✗ 已否决（2026-09-14）：不测试（AGE 不上）
 4. **表结构就绪**（schema migration 是否已跑）
 5. **（仅当启用向量检索时）** embedding 服务的维度与库中向量维度是否一致——最容易踩的坑：
    换了 embedding 模型导致维度不匹配，写入时静默失败。v1 默认不做向量（见 §3.5），该检查
@@ -193,7 +171,8 @@ name without the leading slash"——**只承诺小写、不含前导斜杠**，
 
 第 5 点若启用向量则尤其重要——**维度不一致必须显式报错**，不能等到写入失败才发现。
 
-✅  产品经理决策点: 维度需要用户在配置页面进行配置 
+> ✅ 已确认（`2026-09-14`）：**向量维度由用户在配置页面填写**（配置项），连接测试用该值
+> 与库中 `vector` 列维度比对；AGE 测试项删除。
 
 
 ### 2.3 无需补充的部分
@@ -288,11 +267,9 @@ name without the leading slash"——**只承诺小写、不含前导斜杠**，
 开了才在写入时 embedding、查询时 RRF 合并。**这样插件零外部依赖即可工作**（只要 PG），
 顺带消掉 §2.2⑥ 的维度不匹配隐患（只有开向量才需校验）。
 
-> **决策点 D7**：v1 是否把向量设为「默认关、可选开」？（建议：是）
-
-
-✅  产品经理决策点: 把向量设为「默认关、可选开」;再增加一个设置, 数据库里面可能会存多个workSpace的事实向量, 要求增加一个配置, 是否跨workspace查询 
-或者能指定到具体的workspace [V1不做]
+> **决策点 D7**（✅ 已确认 `2026-09-14`）：向量设为**「默认关、可选开」**。
+> 另新增配置项：**是否跨 workspace 查询 / 指定 workspace**（数据库中可能存多个 workspace
+> 的向量）——**V1 不做**，列入 backlog（§13）。
 
 
 
@@ -331,7 +308,7 @@ dsh-memory-pg/
     ├── segment.mjs         # 语义分割（§3.3）
     ├── store.mjs           # 记忆 CRUD + 检索（关键词/元数据优先 + 可选向量 RRF）
     ├── recall.mjs          # 注入策略（显式注入 / pressure 注入）
-    ├── commands.mjs        # 四个 /memory-pg-* 命令注册
+    ├── commands.mjs        # 五个 /memory-pg-* 命令注册
     ├── tools.mjs           # 模型可调用工具（memory_search 等）
     ├── rerank.mjs          # 检索后 LLM 重排（§3.5 主路径，可选）
     └── client/index.ts     # Client half：设置面板卡片
@@ -388,15 +365,20 @@ CREATE INDEX ON memory USING hnsw (embedding vector_cosine_ops)
 
 ### 4.4 关键数据流：提炼与入库
 
+三条命令共用**同一条提炼管线**，仅出口不同（决策 D2，2026-09-14）：
+
 ```
-用户输入 /memory-pg-save 保存这个bug的排查方案
+用户输入 /memory-pg-save / -compact / -compact-save <参数>
   │
   ├─ 1. ctx.commands handler 被调用（不经过模型）
   ├─ 2. 取当前会话上下文（从 session 事件流，参考实现用 session/event 累积）
   ├─ 3. 走 ctx.llm.stream() 提炼 → 结构化事实 JSON    ⚠️ 见下
   ├─ 4. segment.mjs 分割 + 去重 + 冲突检测
-  ├─ 5. store.mjs 写入 PG（JSON 事实行 + trigram 索引 + content_hash）
-  │     └─ 可选：若「向量检索」开关开启 → embedding.mjs 批量向量化回填 embedding 列
+  ├─ 5. 出口分流：
+  │     ├─ /memory-pg-compact      → 生成 md 记忆文件，交用户决定是否保存（不入库）
+  │     ├─ /memory-pg-save         → store.mjs 写入 PG（JSON 事实行 + trigram + content_hash）
+  │     └─ /memory-pg-compact-save → 免确认：3→4→写入 PG 全自动
+  │           └─ 可选：若「向量检索」开关开启 → embedding.mjs 批量向量化回填 embedding 列
   └─ 6. 返回命令结果（CommandOutcome，由 UI 直接渲染）
 ```
 
@@ -444,16 +426,18 @@ agent/pre-step (waterfall)
 | F-06 | 关键词/元数据检索（trigram 索引）+ LLM 重排 | P0 | M2 |
 | F-07 | 提炼：上下文 → 结构化事实 JSON | P0 | M3 |
 | F-08 | 语义分割 + 去重 + 冲突检测 | P0 | M3 |
-| F-09 | `/memory-pg-save` | P0 | M3 |
-| F-10 | `/memory-pg-search` | P0 | M3 |
-| F-11 | `/memory-pg-load`（注入上下文） | P0 | M4 |
-| F-12 | 向量写入 + 向量检索 + RRF 合并（可选，默认关） | P1 | M5 |
-| F-13 | 模型可调用工具（`memory_search`） | P1 | M4 |
-| F-14 | `/memory-pg-compact` → md 导出 | P1 | M5 |
-| F-15 | 上下文压力触发的自动注入 | P1 | M5 |
+| F-09 | `/memory-pg-save`（分割 + 入库） | P0 | M3 |
+| F-10 | `/memory-pg-compact`（提炼 → 记忆文件，用户决定是否保存） | P0 | M3 |
+| F-11 | `/memory-pg-compact-save`（免确认：提炼 + 分割 + 入库） | P0 | M3 |
+| F-12 | `/memory-pg-search` | P0 | M3 |
+| F-13 | `/memory-pg-load`（注入上下文） | P0 | M4 |
+| F-14 | 向量写入 + 向量检索 + RRF 合并（可选，默认关） | P1 | M5 |
+| F-15 | 模型可调用工具（`memory_search`） | P1 | M4 |
 | F-16 | 记忆管理：列表/编辑/软删除 | P1 | M5 |
-| F-17 | AGE 图：实体关系与取代链 | P2 | M6 |
+| F-17 | 上下文压力触发的自动注入 | P1 | M5 |
 | F-18 | 记忆统计与调试视图 | P2 | M6 |
+| F-19 | ~~AGE 图：实体关系与取代链~~ → ✗ 已否决（2026-09-14） | — | — |
+| F-20 | 跨 workspace 查询 / 指定 workspace 配置（backlog，V1 不做） | P3 | 未来 |
 
 ---
 
@@ -467,10 +451,11 @@ agent/pre-step (waterfall)
 - [ ] 验证 `ctx.llm.stream()` 在命令 handler 中的可用性（决策点 D4）
 - [ ] 验证 PG + pgvector 在本机可跑通，HNSW 索引可用
 - [ ] **验证 JSON+关键词+LLM 重排主路径**：用几个真实检索用例（同义复述 / 无关键词命中）
-      对比「纯关键词」vs「关键词+重排」vs「向量」三条路线的召回质量 —— 决定 D7
+      对比「纯关键词」vs「关键词+重排」vs「向量」三条路线的召回质量 —— 为 D7 已确认的
+      方案（关键词+重排为主，向量可选）提供实证数据
 - [ ] 验证「第二个隔离 DSH 实例」方案可行（§8）
 
-**退出标准**：四个验证各有明确结论；D4、D7 有结论。
+**退出标准**：四个验证各有明确结论；D4 有结论；D7 方案有实证数据支撑。
 
 ### M1 — 骨架与设置面板（P0）
 
@@ -492,9 +477,11 @@ agent/pre-step (waterfall)
 
 - [ ] 提炼 prompt + 结构化输出容错解析
 - [ ] 语义分割 + 去重 + 冲突检测（含单元测试）
-- [ ] `/memory-pg-save` 与 `/memory-pg-search` 端到端可用
+- [ ] `/memory-pg-save`、`/memory-pg-compact`、`/memory-pg-compact-save`、`/memory-pg-search`
+      端到端可用
 
-**退出标准**：`/memory-pg-save 保存这个bug的排查方案` → 库里出现可检索的记忆条目。
+**退出标准**：`/memory-pg-compact-save 保存这个bug的排查方案` → 库里出现可检索的记忆条目；
+`/memory-pg-compact` 生成 md 记忆文件。
 
 ### M4 — 注入（P0）
 
@@ -506,10 +493,10 @@ agent/pre-step (waterfall)
 
 ### M5 — 打磨（P1）
 
-- [ ] md 导出、管理界面、压力自动注入
-- [ ] 可选向量：embedding 客户端 + 维度校验 + 向量检索 + RRF 合并（F-05/F-12，默认关）
+- [ ] 记忆文件管理、管理界面、压力自动注入
+- [ ] 可选向量：embedding 客户端 + 维度校验 + 向量检索 + RRF 合并（F-05/F-14，默认关）
 
-### M6 — AGE 图（P2，条件：D3 确认需要）
+### M6 — ✗ 已移除（2026-09-14）：AGE 图（D3 否决，不排期）
 
 ---
 
@@ -617,7 +604,7 @@ POST /v1/embeddings  →  { data: [{ embedding: [确定性向量] }] }
   docker run --rm -d -p 55432:5432 -e POSTGRES_PASSWORD=test `
     pgvector/pgvector:pg17
   ```
-  ⚠️ 需确认本机有 Docker；且 AGE 需要自定义镜像（又一个 AGE 的成本证据）。
+  ⚠️ 需确认本机有 Docker（AGE 不需要了——D3 已否决，无需自定义镜像）。
 - **方式二**：本机已有 PG，**新建独立 database**（如 `dsh_memory_pg_test`），测完 drop。
 
 ### 8.5 安全护栏
@@ -649,7 +636,7 @@ POST /v1/embeddings  →  { data: [{ embedding: [确定性向量] }] }
 | # | 风险 | 影响 | 缓解 |
 |---|---|---|---|
 | R1 | `ctx.llm.stream()` 在命令中不可用 | 需增加「提炼模型」配置 | M0 先做 spike（D4） |
-| R2 | AGE + 连接池的 `search_path` 问题 | 连接不稳定 | v1 不上 AGE（D3） |
+| R2 | ~~AGE + 连接池的 `search_path` 问题~~ | 连接不稳定 | ✗ 已否决（2026-09-14，D3）：不上 AGE，风险消除 |
 | R3 | embedding 维度与库不一致（仅向量模式） | 写入静默失败 | 显式校验（§2.2 ⑥）；v1 默认不走向量，无此风险 |
 | R4 | 提炼质量不稳定 / JSON 解析失败 | 记忆污染 | 容错解析 + 人工确认（参考实现已有模式） |
 | R5 | 自动注入挤占上下文 | 反而加速溢出 | 严格注入预算 + 优先级排序 |
@@ -660,27 +647,47 @@ POST /v1/embeddings  →  { data: [{ embedding: [确定性向量] }] }
 
 ---
 
-## 11. 待决问题（需要你拍板）
+## 11. 决策状态汇总（2026-09-14 全部确认）
 
-| 编号 | 问题 | 建议 |
+| 编号 | 问题 | 最终决策（已确认 `2026-09-14`） |
 |---|---|---|
-| **D1** | v1 做「显式注入」还是直接做「pressure 自动注入」？ | 先显式，v2 自动 |
-| **D2** | md 导出是独立命令还是 `save` 的参数？ | `save` 的参数（`--md`） |
-| **D3** | v1 是否真的需要 AGE？ | **不需要**，v2 再说 |
-| **D4** | 提炼走 `ctx.llm.stream()` 还是独立 HTTP 端点？ | M0 spike 后定 |
-| **D5** | 记忆的 `kind` 分类是否够用（fact/preference/decision/procedure）？ | 待你确认业务需要 |
-| **D6** | 是否需要「记忆置顶/核心记忆」常驻注入？ | 参考实现有这个特性，建议保留 |
-| **D7** | 检索主路径：JSON+关键词+LLM 重排，向量设为「默认关、可选开」？ | **是**（§3.5）；M0 对比验证后定 |
+| **D1** | 自动注入时机 | 先显式注入 + 手动 `compactNow` 触发路径；pressure 自动注入 → v2 |
+| **D2** | md 导出职责 | 独立命令 `/memory-pg-compact`；`/memory-pg-save` 只分割入库；新增 `/memory-pg-compact-save` 免确认一键完成 |
+| **D3** | AGE 图 | **不上**（✗ 否决，不排期） |
+| **D4** | 提炼走 `ctx.llm.stream()` 还是独立端点 | 路线 A（`ctx.llm.stream()`）为默认，**M0 spike 验证后定**（技术项，非产品决策） |
+| **D5** | `kind` 分类 | 采纳 fact/preference/decision/procedure（用户总确认默认采纳） |
+| **D6** | 记忆置顶/核心记忆 | 保留（用户总确认默认采纳） |
+| **D7** | 检索主路径 + 向量 | JSON+关键词+LLM 重排为主，向量默认关可选开；跨 workspace 查询配置 → backlog（V1 不做） |
+| 连接测试 | AGE / 维度 | AGE 测试项删除；向量维度由用户配置页填写 |
+
+**仍待 M0 技术验证（非产品决策）**：命令 kebab-case 切分、`ctx.llm.stream()` 在命令中可用性
+（D4）、PG+trigram/pgvector 可用、检索路线对比（D7 实证）、隔离实例方案。
 
 ---
 
 ## 12. 下一步
 
-1. **你确认 D1–D7**（尤其 D3、D4、D7——它们影响工作量最大）
-2. 我执行 **M0 技术验证**，把高危假设打掉（含 D7 的检索路线对比）
+1. ✅ **D1–D7 已确认**（2026-09-14）
+2. 执行 **M0 技术验证**（见 §6），把高危假设打掉（含 D4、D7 实证）
 3. M0 通过后，用 `writing-plans` 出**可执行的实施计划**，然后进入实现
 
 > 本文档是**立项与规划**。进入实现前会产出独立的实施计划（分任务、可验证、带 TDD 步骤）。
+
+---
+
+## 13. 决策记录（2026-09-14）
+
+> 本次整合产品经理确认的全部决策；所有修改时间 `2026-09-14`。
+
+| # | 决策内容 | 结果 |
+|---|---|---|
+| D1 | 自动注入时机 | v1 显式注入 + 手动 `compactNow`；pressure 自动 → v2 |
+| 疑问点 1 | `load` / `search` 语义 | `load`=注入本项目记忆；`search`=只读查询历史 |
+| 问题点 1 | 命令名统一 | 五条：compact / save / compact-save / load / search（kebab-case 待 M0 实测） |
+| D2 | md 导出 | `/memory-pg-compact` 生成记忆文件由用户决定保存；`/memory-pg-save` 分割入库；新增 `/memory-pg-compact-save` 免确认全流程 |
+| D3 | AGE | ✗ 否决，不增加工作、不排期 |
+| 连接测试 | AGE 项 / 维度 | AGE 测试删除；向量维度用户配置页填写 |
+| D7 | 向量 | 默认关、可选开；跨 workspace 查询配置 → backlog（V1 不做） |
 
 ---
 
@@ -690,8 +697,8 @@ POST /v1/embeddings  →  { data: [{ embedding: [确定性向量] }] }
 |---|---|---|
 | 存储 | SQLite（单文件） | **PostgreSQL** |
 | 检索主路径 | 向量（内存暴力） | **JSON 事实行 + 关键词（trigram）+ LLM 重排**（§3.5） |
-| 向量 | 必须（依赖 embedding 服务） | **可选、默认关**（pgvector + HNSW，F-12） |
-| 图 | 无 | AGE（v2，待 D3） |
+| 向量 | 必须（依赖 embedding 服务） | **可选、默认关**（pgvector + HNSW，F-14） |
+| 图 | 无 | ~~AGE~~ ✗ 否决（2026-09-14，D3） |
 | 配置方式 | `cordis.patch.yml` 手写 | **设置面板 UI** + 连接测试 |
 | 调用入口 | 自建工具 | **`/memory-pg-*` 命令** + 工具 |
 | 提炼 | 独立 HTTP 端点（9B 本地模型） | ⚠️ 待定（D4），倾向 `ctx.llm` |
