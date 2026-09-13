@@ -5,12 +5,12 @@
 <p align="center">
   <img alt="status" src="https://img.shields.io/badge/status-design--draft-blue">
   <img alt="license" src="https://img.shields.io/badge/license-MIT-green">
-  <img alt="dsh" src="https://img.shields.io/badge/dsh-v0.1.3--alpha.1-orange">
+  <img alt="dsh" src="https://img.shields.io/badge/dsh-v0.1.5--rc.1-orange">
 </p>
 
 > **文档状态：立项与规划（design draft）** — 用于对齐范围与排期，不是可照着实现的定稿规格。
 > 文中标 ⚠️ 的条目是**未经实测的假设**，必须先验证再进入实现；标 ✅ 的是已在
-> 本机 `D:\dsharness\sof\deepseek-harness`（分支 `v0.1.3`）源码中**核实过**的事实。
+> 本机 `D:\dsharness\sof\deepseek-harness`（分支 `v0.1.5-rc.1`）源码中**核实过**的事实。
 
 > **修订记录**：`2026-09-14`（第一次）— 整合产品经理确认的决策（D1/D2/D3/D7、命令名统一为
 > 五条、连接测试调整、AGE 否决）；被否决内容以「✗ 已否决（2026-09-14）」标注，
@@ -18,6 +18,10 @@
 > `2026-09-14`（第二次）— 新增 §14–§16 参考：DSH 设置面板插件配置接入（学自
 > `DSH-better-sidebar`）、DSH 插件开发约定（注释/代码风格/测试）、记忆业务逻辑
 > （学自 `dsh-local-vector-memory`，仅业务逻辑，不含代码结构与 DSH 适配）。
+> `2026-09-14`（第三次）— **环境更新**：harness 重装至 `v0.1.5-rc.1`（§9 契约在本版复核
+> 成立）；新增 §8.0 本机环境事实表（Docker PG `dsh_memory` @54320 自带 vector/age/pg_trgm、
+> Ollama `bge-m3` 1024 维）；§4.3 维度确认、§8.3/§8.4 测试方案改用现成容器、§14 版本差异
+> 提示解除。
 
 ---
 
@@ -362,9 +366,9 @@ CREATE INDEX ON memory USING hnsw (embedding vector_cosine_ops)
   WHERE deleted_at IS NULL AND embedding IS NOT NULL;
 ```
 
-> ⚠️ **待定**：`vector(1024)` 是占位、且只在开启向量后使用。实际维度取决于 embedding 模型
-> （Ollama 常见 `nomic-embed-text`=768、`bge-m3`=1024）。v1 默认不依赖向量（§3.5）；
-> 开启后**维度必须做成配置项并在连接测试时校验**（见 §2.2 ⑥）。
+> ✅ **维度已确认（`2026-09-14`）**：本机 embedding 模型为 `bge-m3:latest`，维度 **1024**
+> （§8.0 已实测）——`vector(1024)` 即实际值，不再是占位。仍保留「向量维度由用户配置页填写」
+> 的配置项（§2.2 ⑥），连接测试用该值与库中 `vector` 列比对。
 
 ### 4.4 关键数据流：提炼与入库
 
@@ -558,8 +562,30 @@ agent/pre-step (waterfall)
 
 ## 8. 本地自测方案（不影响现有 DSH）
 
-**约束**：现有 DSH 正在通过 `dsh web` 服务本会话（`http://127.0.0.1:3080`），且是**源码运行
-的未发布 v0.1.3**。自测绝不能污染它。
+### 8.0 本机环境事实（✅ 已核实 `2026-09-14`）
+
+| 项 | 值 | 核实方式 |
+|---|---|---|
+| 项目路径 | `D:\000CODE\dsh-memory-pg\dsh-memory-pg` | — |
+| harness 源码 | `D:\dsharness\sof\deepseek-harness`，**`dsh-v0.1.5-rc.1`**（2026-09-14 完整重装） | `git describe` → `dsh-v0.1.5-rc.1` |
+| DSH_HOME | `D:\dsharness\data`（环境变量已设） | `$env:DSH_HOME` |
+| `~/.dsh` | 存在：`C:\Users\CZQ\.dsh`（目录） | `Test-Path` |
+| 运行中的 DSH web | `http://127.0.0.1:3080`（本会话即用它，**不可污染**） | — |
+| **PostgreSQL（Docker）** | `localhost:54320`，库 `postgres`，用户 `postgres`，密码 `czq` | TCP 54320 OPEN；`docker ps` → `dsh_memory`（`dawsonlp/postgres-batteries-inc:latest`，healthy） |
+| — 已装扩展 | **`vector 0.8.6` + `age 1.8.0` + `pg_trgm 1.6`** + postgis 等 | `docker exec dsh_memory psql … \dx` |
+| **Ollama** | `http://localhost:11434/` | `GET /api/tags` OK |
+| — embedding 模型 | **`bge-m3:latest`（1.08 GB，维度 1024）** | `GET /api/tags` |
+| — 其它模型 | `Qwen3.5:9B`、`deepseek-r1:14b`、`qwen2.5:14b` | `GET /api/tags` |
+
+**含义**：
+- 数据库**直接用现有 `dsh_memory` 容器**（自带 vector+age，无需再拉镜像）；测试时**新建独立
+  database**（如 `dsh_memory_pg_test`），测完 drop，不动 `postgres` 库。
+- embedding **实测维度 = 1024**（bge-m3）——§4.3 数据模型 `vector(1024)` 占位由此确认。
+- ⚠️ **版本升级提示**：harness 从 v0.1.3 升到 v0.1.5-rc.1 后，先前在 v0.1.3 上核实的契约
+  （§9）已在本版源码复核仍成立；settings 命名空间校验已转为编译期模板字面量（与
+  `DSH-better-sidebar` 的 0.1.5-rc.2 线一致，§14 的版本差异提示可解除）。
+
+**约束**：现有 DSH 通过 `dsh web` 服务本会话（`http://127.0.0.1:3080`）。自测绝不能污染它。
 
 ### 8.1 核心隔离手段：`DSH_HOME`
 
@@ -577,7 +603,7 @@ dsh web --port 3099
 ```
 
 > ⚠️ **待验证**：`dsh web` 的端口参数名（`--port`?）与是否支持与源码 run 方式共用。
-> 这一条在 M0 验证。
+> 这一条在 M0 验证（`scripts/dev-web.ts` 与 `dsh web` CLI 在 0.1.5-rc.1 上的实际行为为准）。
 
 ### 8.2 四层测试策略
 
@@ -593,22 +619,30 @@ dsh web --port 3099
 
 ### 8.3 测试用的 fake embedding server
 
-不要依赖真实的 Ollama（不稳定、慢、维度不可控）。写一个 30 行的 Node HTTP server 返回
-**确定性向量**（例如对文本做哈希种子生成），让测试可复现：
+单测/集成测试**不要依赖真实 Ollama**（慢、不可复现、占用 GPU）。写一个 30 行的 Node HTTP
+server 返回**确定性向量**（例如对文本做哈希种子生成），让测试可复现：
 
 ```
 POST /v1/embeddings  →  { data: [{ embedding: [确定性向量] }] }
 ```
 
+> 向量维度按真实模型对齐：本机 `bge-m3` = **1024 维**（§8.0）。fake server 默认返回
+> 1024 维确定性向量；换模型维度时改配置即可。真实 Ollama 只用于**端到端冒烟**（L4）。
+
 ### 8.4 PG 测试环境
 
-- **方式一（推荐）**：Docker 一次性容器
+✅ 本机已有现成容器（§8.0）：`dsh_memory`（`localhost:54320`，`postgres`/`czq`，
+自带 `vector` + `age` + `pg_trgm`）。**不再需要拉新镜像**：
+
+- **方式一（推荐，本机现成）**：用 `dsh_memory` 容器，**新建独立 database**：
   ```powershell
-  docker run --rm -d -p 55432:5432 -e POSTGRES_PASSWORD=test `
-    pgvector/pgvector:pg17
+  docker exec dsh_memory psql -U postgres -c "CREATE DATABASE dsh_memory_pg_test;"
+  # 连接串: postgres://postgres:czq@localhost:54320/dsh_memory_pg_test
+  # 测完: docker exec dsh_memory psql -U postgres -c "DROP DATABASE dsh_memory_pg_test;"
   ```
-  ⚠️ 需确认本机有 Docker（AGE 不需要了——D3 已否决，无需自定义镜像）。
-- **方式二**：本机已有 PG，**新建独立 database**（如 `dsh_memory_pg_test`），测完 drop。
+  ⚠️ 每个测试库要 `CREATE EXTENSION vector`（扩展是实例级装的，库级需各自启用）。
+- **方式二**：本机其它已有 PG 实例（如 `my_pgvector` 容器在 5433），同样新建独立 database
+  测完 drop。
 
 ### 8.5 安全护栏
 
@@ -725,10 +759,11 @@ await ctx.settings.update(ns, patch, expectedRevision)
 scope.watch(() => { /* 幂等重算 */ })
 ```
 
-> ⚠️ **版本差异提示**：上例是 `DSH-better-sidebar` 在 **0.1.5-rc.2** 依赖线上的写法
-> （命名空间合法性转编译期校验、无运行时 `settingsNamespace` helper）。本机 harness 是
-> **源码 v0.1.3**，settings API 可能有差异——**M0 必须用 `cordis_inspect_query` 核实**
-> `ctx.settings` 的真实签名（是否有 `settingsNamespace()` runtime helper）后再定稿。
+> ✅ **版本差异已消除（`2026-09-14`）**：本机 harness 已重装为 **v0.1.5-rc.1**，与
+> `DSH-better-sidebar` 的 0.1.5-rc.2 依赖线同代。上例写法（命名空间编译期校验、无运行时
+> `settingsNamespace` helper）已在本机源码核实成立（`packages/settings/settings` 导出
+> `SettingsNamespaceInput` 模板字面量类型）。M0 仍用 `cordis_inspect_query` 核实 `ctx.settings`
+> 真实签名后定稿。
 
 要点（全部来自 `DSH-better-sidebar` 实测）：
 
