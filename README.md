@@ -12,9 +12,12 @@
 > 文中标 ⚠️ 的条目是**未经实测的假设**，必须先验证再进入实现；标 ✅ 的是已在
 > 本机 `D:\dsharness\sof\deepseek-harness`（分支 `v0.1.3`）源码中**核实过**的事实。
 
-> **修订记录**：`2026-09-14` — 整合产品经理确认的决策（D1/D2/D3/D7、命令名统一为
+> **修订记录**：`2026-09-14`（第一次）— 整合产品经理确认的决策（D1/D2/D3/D7、命令名统一为
 > 五条、连接测试调整、AGE 否决）；被否决内容以「✗ 已否决（2026-09-14）」标注，
 > 决策明细见 §13。
+> `2026-09-14`（第二次）— 新增 §14–§16 参考：DSH 设置面板插件配置接入（学自
+> `DSH-better-sidebar`）、DSH 插件开发约定（注释/代码风格/测试）、记忆业务逻辑
+> （学自 `dsh-local-vector-memory`，仅业务逻辑，不含代码结构与 DSH 适配）。
 
 ---
 
@@ -688,6 +691,172 @@ POST /v1/embeddings  →  { data: [{ embedding: [确定性向量] }] }
 | D3 | AGE | ✗ 否决，不增加工作、不排期 |
 | 连接测试 | AGE 项 / 维度 | AGE 测试删除；向量维度用户配置页填写 |
 | D7 | 向量 | 默认关、可选开；跨 workspace 查询配置 → backlog（V1 不做） |
+
+---
+
+## 14. 参考：在 DSH 设置面板注册插件配置（学自 `DSH-better-sidebar`）
+
+> 来源：本机 `D:\000CODE\dsh-memory-pg\DSH-better-sidebar`（v0.19.1，`@deepseek-ai/*@0.1.5-rc.2`
+> 依赖线）。本插件的设置面板需求（左下角设置 → 左侧列表出现 `dsh_memory_pg` 配置）照此实现。
+
+### 14.1 两种「配置」的分工（关键）
+
+| 层 | 存放 | 谁写 | 用途 |
+|---|---|---|---|
+| **部署配置** | `cordis.patch.yml` 插件行 `config` | 部署者手改 | 主机行为默认值（如超时、上限） |
+| **用户偏好** | settings 命名空间（`dsh-memory-pg`） | 用户在设置面板改 | 数据库连接 / embedding URL / 维度等 |
+
+`DSH-better-sidebar` 正是这样拆的：`src/config.ts` 的 `Config`（部署配置）+ `PrefsSchema`
+（用户偏好，命名空间 `dsh-better-sidebar`）。**本插件的数据库连接、embedding URL 属于用户
+偏好层**，走 settings 命名空间；部署兜底值放 `config`。
+
+### 14.2 宿主侧：注册设置命名空间（`src/index.ts` 的 `ctx.inject(['settings'], …)`）
+
+```ts
+// DSH 0.1.5 起命名空间校验是编译期模板字面量，直接传常量即可
+const ns = 'dsh-memory-pg'   // 小写字母开头 + [a-z0-9-] 尾部
+const scope = ctx.settings.register(ns, PrefsSchema)   // schemastery schema
+// 读取（含 revision，供 CAS）
+const descriptor = ctx.settings.describe({ redactSecrets: true })
+  .find(candidate => candidate.ns === ns)
+// 更新（revision 守卫：并发修改抛 settings-conflict）
+await ctx.settings.update(ns, patch, expectedRevision)
+// 订阅：设置提交后重新计算工具注册等门控
+scope.watch(() => { /* 幂等重算 */ })
+```
+
+> ⚠️ **版本差异提示**：上例是 `DSH-better-sidebar` 在 **0.1.5-rc.2** 依赖线上的写法
+> （命名空间合法性转编译期校验、无运行时 `settingsNamespace` helper）。本机 harness 是
+> **源码 v0.1.3**，settings API 可能有差异——**M0 必须用 `cordis_inspect_query` 核实**
+> `ctx.settings` 的真实签名（是否有 `settingsNamespace()` runtime helper）后再定稿。
+
+要点（全部来自 `DSH-better-sidebar` 实测）：
+
+- `settings` 是**可选服务**：用 `ctx.inject(['settings'], cb)` 挂接，缺失时降级为默认值，
+  插件照常工作。
+- **浏览器侧不能直连 settings RPC**：DSH 的 settings RPC 域只服务白名单命名空间。插件必须
+  自建 **fenced 路由**（如 `/memory-pg/api/settings.get` / `settings.update`）在进程内调
+  settings seam，客户端经插件路由读写。（`DSH-better-sidebar` 的 `settings.get` /
+  `settings.update` 路由即此模式。）
+- schema 用 schemastery：布尔 `z.boolean().default(true)`、数字 `z.number().step(1).min().max()`、
+  开放 map `z.dict(z.dict(z.any())).default({})`（插件自有字段不丢）。
+
+### 14.3 客户端：注册设置面板分区（`src/client/index.tsx`）
+
+```tsx
+ctx.slots.inject('settings.section', () => ctx.slots.register({
+  name: 'settings.section',
+  id: 'dsh-memory-pg',
+  order: 100,
+  label: () => 'dsh_memory_pg',          // 左侧列表显示名
+  inject: () => ({ /* 传给设置组件的服务/状态 */ }),
+}, SettingsSection))
+```
+
+- 这会让插件出现在**设置壳左侧列表**（`settings.section` 槽）。
+- `DSH-better-sidebar` 额外用 `registerSettingsNavIcon`（DOM 标记）替换壳渲染的通用齿轮图标
+  —— 可选优化，v1 可先不做。
+- 设置 UI 组件内通过 `settingsScope`/插件自有路由读写命名空间；**快照必须引用稳定**
+  （React `useSyncExternalStore` 要求：值未变时返回同一对象，否则 React #185 无限重渲）。
+
+### 14.4 声明式设置行（`pluginSettings` 开放 map）
+
+`DSH-better-sidebar` v0.12.0 起的做法：插件自有设置不侵入宿主 schema，而是存进
+`pluginSettings[<descriptorId>]` 开放 map（`z.dict(z.dict(z.any()))`）。本插件可用同一模式：
+
+- 数据库连接字段（host/port/user/password/dbname）、embedding URL、向量维度、跨 workspace
+  开关（backlog）全部放自己的命名空间；
+- 值须 JSON 可序列化；`parsePrefs` 逐字段校验 + 失败回退默认值（客户端永不信任线缆值）。
+
+---
+
+## 15. 参考：DSH 插件开发约定（学自 `DSH-better-sidebar`）
+
+> 注释代码风格、测试、仓库纪律——照搬能少踩大量坑。
+
+### 15.1 代码/注释风格（实测自其源码）
+
+- **JSDoc 契约式注释**：每个导出函数/类型用 `/** … */` 写清职责、参数（`@param`）、返回
+  （`@returns`）、边界条件；`@module` 标注文件归属。示例见其 `src/prefs-shared.ts`、
+  `src/config.ts`。
+- **命名空间常量集中定义**：`SIDEBAR_PREFS_NS = 'dsh-better-sidebar'` 单点定义，两端共享
+  （`prefs-shared.ts` 同时被 host 与 client 引用，且**不引 schemastery**，避免浏览器包拖入
+  schema 运行时）。
+- **每字段带默认值与范围常量**：如 `TERMINAL_FONT_SIZE_MIN/MAX/DEFAULT`，clamp 函数两端共用。
+- **ESLint**（`eslint.config.js`）：`@eslint/js recommended` + `typescript-eslint recommended`
+  （非 type-checked 档）+ react-hooks（仅经典双规则，关掉 React Compiler 语义档）；
+  `no-unused-vars` 允许 `^_` 前缀占位；孤儿 eslint-disable 注释报错；globals 按运行域分治
+  （client→browser，host→node，tests→混合）。
+- **栅栏纪律**：client bundle 禁止 value-import 非白名单包；重依赖（xterm/CodeMirror/mermaid）
+  走懒加载 chunk；i18n 词典集中，新增 key 必须同步全部语言词典。
+
+### 15.2 测试约定（vitest + Playwright）
+
+- **纯逻辑单元测试**（host，无浏览器）与 **jsdom 组件测试**（文件头 `// @vitest-environment
+  jsdom`）分离；e2e 用 `*.e2e.ts` 命名 + vitest `exclude` 双保险。
+- **`vitest.config.ts`**：`testTimeout: 15_000`（Windows 真起进程的用例 5000ms 不够）；
+  `exclude` 必须**显式重列**默认排除项（整体替换默认值）。
+- **契约守护测试**：不测行为而测「契约不变」——如 `manifest-consistency.spec.ts`（打包产物
+  与声明一致）、`market-manifest.spec.ts`（依赖不含 `cordis`、无 install 脚本）、
+  `theme.spec.ts`（样式零硬编码颜色）。
+- **挂载冒烟**：`pnpm build && pnpm pack` → 装进 scratch profile → 真实 `dsh web` 启动 →
+  Playwright 断言挂载成功、无 console 错误（本插件 §8 自测方案 L3/L4 可复用此法）。
+
+### 15.3 仓库纪律（AGENTS.md）
+
+- **禁止修改 DSH 源码**；插件以独立 npm 包被 profile 引用，不反向侵入。
+- 依赖约束：`dependencies`/`peerDependencies`/`optionalDependencies` **不得出现 `cordis`**
+  （按名硬拒），`scripts` 不得含 `preinstall`/`install`/`postinstall`/`prepare`。
+- 缺能力时用 DSH 现成公开 API 或插件自有路由，不改 DSH。
+
+---
+
+## 16. 参考：记忆业务逻辑（学自 `dsh-local-vector-memory`，仅业务逻辑）
+
+> ⚠️ 按你的要求：**只借鉴**「记忆存储 / 提取 / 分割」**业务逻辑**；**不借鉴**其代码结构
+> （SQLite 单文件、embedding 客户端实现）与 DSH 适配（hook/工具注册）。本节提炼可直接
+> 迁移到 PostgreSQL + 本插件架构的语义。
+
+### 16.1 存储语义（可移植到 PG 表）
+
+其 `lib/store.mjs` 的 `memories` 表暴露了值得保留的**业务语义**：
+
+| 语义 | 参考实现 | 本插件落地 |
+|---|---|---|
+| 软删除 | `deleted_at` 标记，`restore()` 可恢复；`forget(soft=false)` 硬删 | PG `deleted_at` 列（已入 §4.3 草案） |
+| **取代链** | `superseded_at` / `superseded_by`：旧记忆被新记忆「修正/取代」时打标记 | **冲突检测（§3.4）的落点**——相似度落在冲突区间时不覆盖，而是标记取代链 |
+| 置顶核心记忆 | `pinned` 列 + `listPinned()`（会话首次召回整体注入） | 决策 D6（保留） |
+| 来源与作用域 | `source` / `session_id` / `cwd` 列 | PG 用 `workspace_id` / `session_id`（workspace 隔离） |
+| 标签规范化 | `normalizeTags`：去重、去空白、最多 20 个 | 直接复用 |
+| 统计 | `stats()`：total/vectorized/pinned/superseded/missingVectors/dimensions | 设置面板调试视图（F-18） |
+
+### 16.2 提取与分割（其 `lib/extract.mjs` 已验证的 prompt 与容错）
+
+- **提取 prompt 纪律**：只提取「跨会话仍有价值的事实/偏好/约定/决定/环境约束」；不提取寒暄、
+  过程细节、工具输出、临时路径；每条是独立完整陈述；**只输出 JSON**
+  `{"memories":[{"text","tags"}]}`；没有可记内容输出空数组。⚠️ 本插件的 /compact 系命令
+  的提炼 prompt 照此撰写。
+- **长上下文分块**：`splitTranscript` 按段落打包到 `chunkChars`（默认 1000），超长段落硬切，
+  最多 `maxChunks` 块——逐块提炼后合并（防一次请求超限）。
+- **JSON 容错解析三级**：整段 JSON → 剥代码块 → 提取第一个平衡大括号对象（`extractBalancedObject`）。
+  模型输出不干净时不会全丢。
+- **去重**：归一化（去空白）后哈希比对，`<4` 字符丢弃，`seen` 集合防跨块重复。
+
+### 16.3 检索融合（其 `store.mjs` 的 RRF 算法）
+
+`search()` 用**向量 + 关键词双信号 RRF 融合**（本插件 §3.5 已采纳关键词优先，向量可选）：
+
+```text
+score = Σ 1/(k + rank)     k=60（常数）
+```
+
+- 双信号都在时按 RRF 排序（`match:'rrf'`）；单信号时按原分数（`match:'vector'|'keyword'`）；
+- 向量结果不足 limit 时用关键词**补位**；
+- 中文关键词打分 `keywordScore`：查询分词（≥2 字符词），CJK 连续串 ≤4 字整串、>4 字用
+  二元组近似；命中率 = hits/terms。
+
+> 本插件 v1 主路径 = 关键词（PG trigram）+ LLM 重排；若开向量，直接复用此 RRF 融合公式
+> （PG 侧用 `vector_cosine_ops` 距离替换其内存余弦）。
 
 ---
 
