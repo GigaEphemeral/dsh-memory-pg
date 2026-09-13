@@ -53,7 +53,7 @@
 
 | 状态 | 任务 | 验收 | 备注 |
 |---|---|---|---|
-| [ ] | `schema.sql`：memory 表 + 迁移 | 建表/升级幂等；含 `workspace_id`/`session_id`/`kind`/`content`/`tags`/`embedding`(可空)/`content_hash`/软删除列 | 表结构草案见 §4.3 |
+| [ ] | `schema.sql`：分层四表 + 迁移 | 建表/升级幂等；`messages`/`facts`/`ltm_entries`/`embeddings` 四表 + 索引 + 时间戳原则 | 表结构见 README §4.3（分层四表 + 向量分离） |
 | [ ] | 连接池 + 健康检查 | 池化连接；断连可重连；`SELECT 1` 健康检查 | |
 | [ ] | 扩展管理 | `pg_trgm`（主路径）+ `vector`（可选）按需 `CREATE EXTENSION` | 每个测试库需各自启用（§8.4） |
 | [ ] | `store.mjs` CRUD | add/get/update/soft-delete/restore/list；`content_hash` 精确去重 | 语义照搬 §16.1 |

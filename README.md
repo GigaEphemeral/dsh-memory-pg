@@ -24,6 +24,10 @@
 > 提示解除。
 > `2026-09-14`（第四次）— **任务拆分**：新建 [`task.md`](task.md) 收纳详细待办（逐项验收
 > 与备注）；README §5/§6 改为概览并链接 task.md；新增 §17 Future（暂时不做）清单。
+> `2026-09-14`（第五次）— **数据模型重构**：单表 `memory` → **分层四表**（messages / facts /
+> ltm_entries / embeddings）+ 向量分离绑定（5.1）、三要素+冲突状态（5.2）、分层标签（5.3）、
+> 压缩保留引用（5.4）、逐表字段清单检查（5.5）；补 `superseded_by`/`pinned` 语义、时间戳
+> 原则（数据生成时间 vs 压缩/提取时间）。
 
 ---
 
@@ -36,8 +40,8 @@ DSH（DeepSeek Harness）的会话上下文是有限资源。当前会话历史�
 本插件提供**外部可检索的长期记忆层**：
 
 1. **提炼（distill）**：用 DSH 自身的模型能力把当前上下文提炼成结构化事实（JSON）。
-2. **持久化（persist）**：存入 PostgreSQL；JSON 事实行 + 关键词检索为 v1 主路径，pgvector
-   向量检索可选（§3.5），关系/实体用 AGE 图（v2）。
+2. **持久化（persist）**：存入 PostgreSQL；**分层四表**（原始日志 / 结构化事实 / 长期知识 /
+   向量索引）——v1 关键词检索为事实层主路径，pgvector 向量检索可选（§3.5），关系/实体用 AGE 图（v2）。
 3. **注入（inject）**：上下文不足或用户显式调用时，把记忆重新注入对话。
 4. **可配置（configure）**：在 DSH 设置面板里配置数据库连接与 embedding 服务（可选），支持连接测试。
 
@@ -311,7 +315,7 @@ dsh-memory-pg/
     ├── config.mjs          # 配置解析 + 默认值 + 校验
     ├── settings.mjs        # 设置命名空间注册（settingsNamespace('memory-pg')）
     ├── db.mjs              # PG 连接池 + 健康检查 + migration
-    ├── schema.sql          # 建表 DDL（含 pgvector 列与索引）
+    ├── schema.sql          # 分层四表 DDL（messages/facts/ltm_entries/embeddings）
     ├── embedding.mjs       # OpenAI 兼容 embedding 客户端（Ollama 可用）
     ├── distill.mjs         # 提炼：走 ctx.llm.stream()，产出结构化事实 JSON
     ├── segment.mjs         # 语义分割（§3.3）
@@ -337,40 +341,176 @@ dsh-memory-pg/
 **关键设计约束**：把 `segment.mjs` 和 `recall.mjs` 写成**纯函数**（输入数据 → 输出数据，
 不碰 IO）。这样核心逻辑无需 DSH、无需 PG 就能测，这是 §8 本地自测能低成本跑起来的前提。
 
-### 4.3 数据模型（草案，⚠️ 待细化）
+### 4.3 数据模型（分层四表 + 向量分离，2026-09-14 重新设计）
 
-```sql
--- v1：JSON 事实行 + 关键词检索（§3.5）；pgvector 列可选
-CREATE EXTENSION IF NOT EXISTS pg_trgm;   -- 关键词检索主路径
-CREATE EXTENSION IF NOT EXISTS vector;    -- 可选：仅启用向量时使用
+**五条设计原则**（来自需求确认）：
 
-CREATE TABLE memory (
-  id           BIGSERIAL PRIMARY KEY,
-  workspace_id TEXT        NOT NULL,        -- workspace 隔离（本次已确认的决策）
-  session_id   TEXT,                        -- 来源会话（可空，跨会话共享）
-  kind         TEXT        NOT NULL,        -- fact | preference | decision | procedure
-  content      TEXT        NOT NULL,        -- 原子事实正文
-  tags         TEXT[]      DEFAULT '{}',
-  embedding    vector(1024),                -- 可空：v1 默认 NULL，仅开向量后写入
-  content_hash TEXT        NOT NULL,        -- 精确去重
-  source_seq   BIGINT,                      -- 来源会话事件 seq（可溯源）
-  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
-  deleted_at   TIMESTAMPTZ                  -- 软删除
-);
+1. **内容与向量分离但绑定**（5.1）：正文存在各领域表；向量统一放 `embeddings` 表，用
+   `ref_table` + `ref_id` 多态绑定回任意层内容。换 embedding 模型只影响向量表，不动正文。
+2. **结构化事实三要素 + 冲突状态**（5.2）：facts 用 `subject/predicate/object` 三要素 +
+   `status`/`superseded_by` 冲突状态；**不保留中间尝试内容**（如半成品/失败尝试，只留
+   定稿事实）。
+3. **分层标签**（5.3）：`tags` 存层级路径（如 `['编程','编程-java']`、`['娱乐']`），
+   支持按层过滤（`编程` 前缀命中 `编程-java`、`编程-llm`）。
+4. **压缩与摘要保留引用，不丢原始**（5.4）：facts/ltm 均带 `source_message_ids` 等引用列，
+   摘要永远能回溯到原始日志。
+5. **逐表字段清单检查**（5.5）：见下方"逐表字段清单"表——按需取用，明确标注省略项。
 
-CREATE UNIQUE INDEX ON memory (workspace_id, content_hash);
--- 关键词检索（v1 主路径）：trigram 让 LIKE / ILIKE 走索引
-CREATE INDEX ON memory USING gin (content gin_trgm_ops);
-CREATE INDEX ON memory (workspace_id, created_at DESC) WHERE deleted_at IS NULL;
--- 可选向量索引：仅当启用向量且列非空时才有意义（部分索引）
-CREATE INDEX ON memory USING hnsw (embedding vector_cosine_ops)
-  WHERE deleted_at IS NULL AND embedding IS NOT NULL;
+**分层结构**：
+
+```
+原始日志层  messages/events   ← 完整对话消息/工具调用（审计与回溯）
+      │  提炼（distill，含事实提取时间戳）
+      ▼
+结构化事实层 facts            ← 三要素原子事实 + 重要性/冲突状态（核心记忆）
+      │  周期合并 / 去重 / 摘要
+      ▼
+长期知识层  ltm_entries       ← 摘要 / 合并知识块（上下文不足时召回）
+      │  内容向量化（记录 embedding_model）
+      ▼
+向量索引层  embeddings        ← ref_table/ref_id 绑定任意层内容的向量
 ```
 
-> ✅ **维度已确认（`2026-09-14`）**：本机 embedding 模型为 `bge-m3:latest`，维度 **1024**
-> （§8.0 已实测）——`vector(1024)` 即实际值，不再是占位。仍保留「向量维度由用户配置页填写」
-> 的配置项（§2.2 ⑥），连接测试用该值与库中 `vector` 列比对。
+```sql
+-- ============ 0. 扩展 ============
+CREATE EXTENSION IF NOT EXISTS pg_trgm;   -- 关键词检索主路径（每层 content）
+CREATE EXTENSION IF NOT EXISTS vector;    -- 可选：向量检索开启时使用
+
+-- ============ 1. 原始日志层：完整消息/事件（目的3：审计与回溯） ============
+CREATE TABLE messages (
+  message_id     BIGSERIAL PRIMARY KEY,
+  workspace_id   TEXT        NOT NULL,     -- 冗余 key：隔离/过滤
+  session_id     TEXT        NOT NULL,     -- 冗余 key：会话维度
+  agent_id       TEXT,                     -- 冗余 key：可选，按 agent 过滤
+  role           TEXT        NOT NULL,     -- user | assistant | tool
+  event_type     TEXT        NOT NULL DEFAULT 'message',  -- message | tool_call | tool_result
+  content        TEXT        NOT NULL,     -- 完整原文（不丢原始）
+  source_seq     BIGINT,                   -- DSH 会话事件 seq（溯源锚点）
+  content_hash   TEXT        NOT NULL,     -- 完整性/去重
+  token_count    INTEGER,                  -- 上下文计量（目的1）
+  created_at     TIMESTAMPTZ NOT NULL,     -- ★ 数据生成时间（会话内）
+  captured_at    TIMESTAMPTZ NOT NULL DEFAULT now(),  -- ★ 写入插件库时间
+  updated_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+  deleted_at     TIMESTAMPTZ,              -- 软删除（保留策略）
+  retention_until TIMESTAMPTZ              -- 保留期（可选，审计策略）
+);
+CREATE INDEX ON messages (workspace_id, session_id, created_at);
+CREATE INDEX ON messages (workspace_id, content_hash);
+CREATE INDEX ON messages USING gin (content gin_trgm_ops);
+
+-- ============ 2. 结构化事实层：原子事实（目的1&3：压缩后的核心记忆） ============
+CREATE TABLE facts (
+  fact_id          BIGSERIAL PRIMARY KEY,
+  workspace_id     TEXT        NOT NULL,   -- 冗余 key：隔离/过滤
+  session_id       TEXT,                   -- 来源会话（可空=跨会话合并产物）
+  agent_id         TEXT,                   -- 冗余 key：可选
+  subject          TEXT        NOT NULL,   -- 三要素：主体
+  predicate        TEXT        NOT NULL,   -- 三要素：谓词
+  object           TEXT        NOT NULL,   -- 三要素：客体
+  content          TEXT        NOT NULL,   -- 完整陈述（三要素合成句，便于展示/检索/向量化）
+  kind             TEXT        NOT NULL DEFAULT 'fact',  -- fact | preference | decision | procedure（D5）
+  tags             TEXT[]      DEFAULT '{}',   -- 分层标签：['编程','编程-java']（5.3）
+  importance       NUMERIC(3,1),           -- 重要性 0–10
+  confidence       NUMERIC(3,1),           -- 置信度 0–10
+  status           TEXT        NOT NULL DEFAULT 'active',  -- active | pending_review | superseded | conflicted
+  version          INTEGER     NOT NULL DEFAULT 1,
+  superseded_by    BIGINT,                 -- 取代链：指向新 fact_id（§3.4 冲突检测落点）
+  source_message_ids BIGINT[],             -- 引用原始日志（5.4：不丢原始）
+  content_hash     TEXT        NOT NULL,   -- 精确去重（§3.4）
+  token_count      INTEGER,                -- 计量
+  created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),  -- ★ 事实提取时间
+  updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+  deleted_at       TIMESTAMPTZ,            -- 软删除
+  valid_from       TIMESTAMPTZ,            -- 有效区间（可选）
+  valid_until      TIMESTAMPTZ
+);
+CREATE UNIQUE INDEX ON facts (workspace_id, content_hash);
+CREATE INDEX ON facts USING gin (tags);                              -- 分层标签过滤（5.3）
+CREATE INDEX ON facts USING gin (content gin_trgm_ops);              -- 关键词检索主路径
+CREATE INDEX ON facts (workspace_id, importance DESC) WHERE deleted_at IS NULL;  -- 高价值优先
+CREATE INDEX ON facts (workspace_id, created_at DESC) WHERE deleted_at IS NULL;
+CREATE INDEX ON facts (workspace_id, status) WHERE deleted_at IS NULL;
+
+-- ============ 3. 长期知识层：摘要/知识块（目的1&2：上下文不足时召回） ============
+CREATE TABLE ltm_entries (
+  entry_id         BIGSERIAL PRIMARY KEY,
+  workspace_id     TEXT        NOT NULL,   -- 冗余 key：隔离/过滤
+  session_id       TEXT,                   -- 可空（跨会话合并产物）
+  agent_id         TEXT,                   -- 冗余 key：可选
+  summary_type     TEXT        NOT NULL,   -- session_summary | topic_merge | doc_chunk | compaction
+  title            TEXT,                   -- 可读标题
+  content          TEXT        NOT NULL,   -- 摘要/知识块正文
+  tags             TEXT[]      DEFAULT '{}',
+  source_message_ids BIGINT[],             -- 引用原始日志（5.4）
+  source_fact_ids  BIGINT[],               -- 引用结构化事实（5.4）
+  is_summary       BOOLEAN     NOT NULL DEFAULT TRUE,
+  summary_of       TEXT,                   -- 被摘要对象描述（如"会话 xxx 第 1–3 轮"）
+  importance       NUMERIC(3,1),
+  confidence       NUMERIC(3,1),
+  status           TEXT        NOT NULL DEFAULT 'active',
+  version          INTEGER     NOT NULL DEFAULT 1,
+  superseded_by    BIGINT,                 -- 取代链
+  content_hash     TEXT        NOT NULL,
+  token_count      INTEGER,
+  created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),  -- ★ 压缩/合并生成时间
+  updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+  deleted_at       TIMESTAMPTZ,
+  valid_from       TIMESTAMPTZ,
+  valid_until      TIMESTAMPTZ,
+  retention_until  TIMESTAMPTZ
+);
+CREATE INDEX ON ltm_entries (workspace_id, created_at DESC) WHERE deleted_at IS NULL;
+CREATE INDEX ON ltm_entries USING gin (tags);
+CREATE INDEX ON ltm_entries USING gin (content gin_trgm_ops);
+CREATE INDEX ON ltm_entries (workspace_id, status) WHERE deleted_at IS NULL;
+
+-- ============ 4. 向量索引层：内容-向量分离绑定（目的2：语义召回） ============
+CREATE TABLE embeddings (
+  id              BIGSERIAL PRIMARY KEY,
+  workspace_id    TEXT        NOT NULL,    -- 冗余 key：过滤
+  ref_table       TEXT        NOT NULL,    -- messages | facts | ltm_entries（多态绑定）
+  ref_id          BIGINT      NOT NULL,    -- 对应表主键
+  content_hash    TEXT        NOT NULL,    -- 与来源内容一致性
+  embedding       VECTOR(1024) NOT NULL,   -- ✅ bge-m3 = 1024 维（§8.0 实测）
+  embedding_model TEXT        NOT NULL,    -- 'bge-m3'：换模型可区分/重算
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),  -- ★ 向量化时间
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (ref_table, ref_id, embedding_model)
+);
+CREATE INDEX ON embeddings USING hnsw (embedding vector_cosine_ops);
+CREATE INDEX ON embeddings (workspace_id);
+CREATE INDEX ON embeddings (content_hash);
+```
+
+**时间戳原则**（字段设计原则 1）：每层区分**数据生成时间**与**压缩/提取时间**——`messages.created_at`
+= 会话内消息生成时间、`facts.created_at` = 事实提取时间、`ltm_entries.created_at` = 压缩合并时间、
+`embeddings.created_at` = 向量化时间；统一另有 `captured_at`/`updated_at` 记录入库与修改。
+
+**逐表字段清单（5.5 检查）**：
+
+| 清单项 | messages | facts | ltm_entries | embeddings |
+|---|---|---|---|---|
+| id | `message_id` | `fact_id` | `entry_id` | `id` |
+| tenant_id | ❌ 单用户，YAGNI（§1） | 同左 | 同左 | 同左 |
+| user_id | ❌ 单用户，`workspace_id` 代替 | 同左 | 同左 | 同左 |
+| agent_id | ✅（可选） | ✅（可选） | ✅（可选） | ❌ 冗余无必要 |
+| session_id | ✅ | ✅（可空） | ✅（可空） | ❌ 经 ref 关联 |
+| created_at / updated_at / deleted_at | ✅ | ✅ | ✅ | ✅ |
+| valid_from / valid_until | ❌ 日志不需 | ✅（可选） | ✅（可选） | ❌ |
+| source_event_id | ✅ `source_seq` | ✅ `source_message_ids[]` | ✅ `source_message_ids[]`/`source_fact_ids[]` | ❌ 经 ref 关联 |
+| version / superseded_by | ❌ 日志不可变 | ✅ | ✅ | ❌ |
+| content / content_hash | ✅ | ✅ | ✅ | ❌ 只存向量 |
+| embedding / embedding_model | ❌ 走 embeddings | ❌ 走 embeddings | ❌ 走 embeddings | ✅ `embedding` + `embedding_model` |
+| importance / confidence / status | ❌ | ✅ | ✅ | ❌ |
+| access_count | ❌ 暂不需要 | ❌ 暂不需要 | ❌ 暂不需要 | ❌ |
+| visibility / acl / pii_flag | ❌ 本地单用户库（YAGNI） | 同左 | 同左 | 同左 |
+| retention_until | ✅（可选） | ❌ | ✅（可选） | ❌ |
+| token_count | ✅ | ✅ | ✅ | ❌ |
+| summary_of / is_summary | ❌ | ❌（facts 即原子） | ✅ | ❌ |
+
+**各表服务的目的**（对照你的原始编号）：`messages` = 目的 3（审计与回溯）；`facts` = 目的 1 & 3
+（压缩后的核心记忆）；`ltm_entries` = 目的 1 & 2（上下文不足时召回）；`embeddings` = 目的 2
+（语义召回）。
 
 ### 4.4 关键数据流：提炼与入库
 
@@ -385,7 +525,7 @@ CREATE INDEX ON memory USING hnsw (embedding vector_cosine_ops)
   ├─ 4. segment.mjs 分割 + 去重 + 冲突检测
   ├─ 5. 出口分流：
   │     ├─ /memory-pg-compact      → 生成 md 记忆文件，交用户决定是否保存（不入库）
-  │     ├─ /memory-pg-save         → store.mjs 写入 PG（JSON 事实行 + trigram + content_hash）
+  │     ├─ /memory-pg-save         → store.mjs 写入 PG（facts 表 + source_message_ids 引用）
   │     └─ /memory-pg-compact-save → 免确认：3→4→写入 PG 全自动
   │           └─ 可选：若「向量检索」开关开启 → embedding.mjs 批量向量化回填 embedding 列
   └─ 6. 返回命令结果（CommandOutcome，由 UI 直接渲染）
@@ -547,7 +687,7 @@ agent/pre-step (waterfall)
 **含义**：
 - 数据库**直接用现有 `dsh_memory` 容器**（自带 vector+age，无需再拉镜像）；测试时**新建独立
   database**（如 `dsh_memory_pg_test`），测完 drop，不动 `postgres` 库。
-- embedding **实测维度 = 1024**（bge-m3）——§4.3 数据模型 `vector(1024)` 占位由此确认。
+- embedding **实测维度 = 1024**（bge-m3）——§4.3 `embeddings.embedding VECTOR(1024)` 即实际值。
 - ⚠️ **版本升级提示**：harness 从 v0.1.3 升到 v0.1.5-rc.1 后，先前在 v0.1.3 上核实的契约
   （§9）已在本版源码复核仍成立；settings 命名空间校验已转为编译期模板字面量（与
   `DSH-better-sidebar` 的 0.1.5-rc.2 线一致，§14 的版本差异提示可解除）。
@@ -825,12 +965,12 @@ ctx.slots.inject('settings.section', () => ctx.slots.register({
 
 | 语义 | 参考实现 | 本插件落地 |
 |---|---|---|
-| 软删除 | `deleted_at` 标记，`restore()` 可恢复；`forget(soft=false)` 硬删 | PG `deleted_at` 列（已入 §4.3 草案） |
-| **取代链** | `superseded_at` / `superseded_by`：旧记忆被新记忆「修正/取代」时打标记 | **冲突检测（§3.4）的落点**——相似度落在冲突区间时不覆盖，而是标记取代链 |
-| 置顶核心记忆 | `pinned` 列 + `listPinned()`（会话首次召回整体注入） | 决策 D6（保留） |
-| 来源与作用域 | `source` / `session_id` / `cwd` 列 | PG 用 `workspace_id` / `session_id`（workspace 隔离） |
-| 标签规范化 | `normalizeTags`：去重、去空白、最多 20 个 | 直接复用 |
-| 统计 | `stats()`：total/vectorized/pinned/superseded/missingVectors/dimensions | 设置面板调试视图（F-18） |
+| 软删除 | `deleted_at` 标记，`restore()` 可恢复；`forget(soft=false)` 硬删 | 各层 `deleted_at`（§4.3 四表均有） |
+| **取代链** | `superseded_at` / `superseded_by`：旧记忆被新记忆「修正/取代」时打标记 | **`facts.superseded_by` / `ltm_entries.superseded_by`**（§3.4 冲突检测落点） |
+| 置顶核心记忆 | `pinned` 列 + `listPinned()`（会话首次召回整体注入） | 决策 D6；v1 落点为 `facts.importance` 高分筛选 + `ltm_entries` 置顶语义（§4.3） |
+| 来源与作用域 | `source` / `session_id` / `cwd` 列 | `workspace_id` / `session_id`（workspace 隔离）；`source_message_ids[]` 引用原始日志 |
+| 标签规范化 | `normalizeTags`：去重、去空白、最多 20 个 | 复用；升级为**分层标签路径**（5.3，`['编程','编程-java']`） |
+| 统计 | `stats()`：total/vectorized/pinned/superseded/missingVectors/dimensions | 设置面板调试视图（F-18），跨四表聚合 |
 
 ### 16.2 提取与分割（其 `lib/extract.mjs` 已验证的 prompt 与容错）
 
