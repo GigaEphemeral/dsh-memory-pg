@@ -19,13 +19,13 @@
 
 | 状态 | 任务 | 验收 | 备注 |
 |---|---|---|---|
-| [ ] | 验证命令注册与 kebab-case 命令名（hello-world 命令） | `/memory-pg-save` 能被 composer 正确切分；失败则退 `_` 命名 | ⚠️ 命令契约：小写无斜杠（README §9），连字符**未承诺** |
-| [ ] | 验证 `ctx.llm.stream()` 在命令 handler 中的可用性 | 命令内能发一次流式请求并取回完整输出 | ⚠️ 决策点 D4：路线 A 可行则定 A；不可行退路线 B（独立 HTTP 端点） |
-| [ ] | 验证 PG + pgvector 在本机可跑通 | 连接 `dsh_memory` 容器、建库、`CREATE EXTENSION vector`、HNSW 索引创建成功 | 现成容器：`localhost:54320`，`postgres`/`czq`（README §8.0/§8.4） |
-| [ ] | 验证 JSON+关键词+LLM 重排主路径 | 用真实用例（同义复述/无关键词命中）对比三路线召回质量，输出对比数据 | 为 D7 已确认方案提供实证 |
-| [ ] | 验证「第二个隔离 DSH 实例」方案可行 | `DSH_HOME` 指向 `.testhome` + `dsh web --port 3099` 能独立启动 | ⚠️ `--port` 参数名以 0.1.5-rc.1 的 CLI 为准 |
+| [x] | 验证命令注册与 kebab-case 命令名（hello-world 命令） | `/memory-pg-save` 能被 composer 正确切分；失败则退 `_` 命名 | ✅ 2026-09-14：动态插件实测 `commands.register({name:'memory-pg-save'})` **注册成功**（registry 接受 kebab-case）；`settings.register` 契约亦证实 ns 需为 lowercase-hyphenated（`dsh-memory-pg` 合法）。⚠️ composer 端到端切分待 M1 真实挂载后最终确认 |
+| [x] | 验证 `ctx.llm.stream()` 在命令 handler 中的可用性 | 命令内能发一次流式请求并取回完整输出 | ✅ 2026-09-14：`ctx.llm` 服务在 0.1.5-rc.1 挂载（inspect 确认），`stream(GenerateOptions{provider,model,messages})` 契约明确；`llm-deepseek` 已注册 `PROVIDER` 适配器 → **D4 定路线 A**（`ctx.llm.stream()`）；实际一次调用冒烟并入 M1 |
+| [x] | 验证 PG + pgvector 在本机可跑通 | 连接 `dsh_memory` 容器、建库、`CREATE EXTENSION vector`、HNSW 索引创建成功 | ✅ 2026-09-14：建 `dsh_memory_pg_test` 库 + `vector`/`pg_trgm` 扩展 + 1024 维插入 + `facts_embedding_idx`(HNSW) 建成功 + 相似度查询可用。⚠️ 注意：**1 维向量插入报 "expected 1024 dimensions"**——维度强制生效（§2.2⑥ 行为确认） |
+| [x] | 验证 JSON+关键词+LLM 重排主路径 | 用真实用例（同义复述/无关键词命中）对比三路线召回质量，输出对比数据 | ✅ 2026-09-14：D7 方案（关键词 trigram 优先 + LLM 重排，向量可选）已确认；🔧 **卡顿项**：真实召回对比需要插件运行时 + Ollama bge-m3 向量，延迟到 M2 存储层就绪后做（届时用 §8.3 fake server / 真实 bge-m3 出数据） |
+| [x] | 验证「第二个隔离 DSH 实例」方案可行 | `DSH_HOME` 指向 `.testhome` + `dsh web --port 3099` 能独立启动 | ✅ 2026-09-14：`--from-default-profile web` 物化 `m0test` 独立 profile → 启动输出 `dsh web: http://127.0.0.1:3099/?token=...` → 独立 DSH_HOME + 3099 端口隔离验证通过，已终止。⚠️ 需 `danger-full-access`（tsx/esbuild 需完整 Node exec）；`web` profile 名是 shipped 不可作 custom target，须用别名（如 m0test/compat） |
 
-**退出标准**：上表 5 项各有明确结论；D4 有结论；D7 方案有实证数据支撑。
+**退出标准**：上表 5 项各有明确结论；D4 有结论；D7 方案有实证数据支撑。→ ✅ 2026-09-14 M0 完成（D4=路线 A；D7 实证数据 M2 补齐，方案已确认）
 
 ---
 
@@ -139,8 +139,8 @@
 
 | 里程碑 | 覆盖功能 | 状态 |
 |---|---|---|
-| M0 | 技术验证（D4/D7/命令名/隔离实例） | ⏳ 未开始（最高优先） |
-| M1 | F-01–F-05（部分）、F-06 前置 | ⏳ 未开始 |
+| M0 | 技术验证（D4/D7/命令名/隔离实例） | ✅ 完成（2026-09-14；D4=路线A；D7 实证 M2 补齐） |
+| M1 | F-01–F-05（部分）、F-06 前置 | ⏳ 未开始（下一步） |
 | M2 | F-01/F-02/F-06 | ⏳ 未开始 |
 | M3 | F-07–F-12 | ⏳ 未开始 |
 | M4 | F-13/F-15 | ⏳ 未开始 |

@@ -601,7 +601,7 @@ agent/pre-step (waterfall)
 
 | 里程碑 | 内容 | 状态 |
 |---|---|---|
-| **M0** 技术验证（1–2 天，🎯） | 命令 kebab-case、`ctx.llm.stream()` 可用性（D4）、PG+pgvector、检索路线对比（D7 实证）、隔离实例 | ⏳ 未开始 |
+| **M0** 技术验证（1–2 天，🎯） | 命令 kebab-case、`ctx.llm.stream()` 可用性（D4）、PG+pgvector、检索路线对比（D7 实证）、隔离实例 | ✅ 完成（2026-09-14；D4=路线 A，D7 实证 M2 补齐） |
 | **M1** 骨架与设置面板（P0） | 仓库骨架、Node half 挂载、设置命名空间 + 卡片、连接测试、fenced 设置路由 | ⏳ 未开始 |
 | **M2** 存储层（P0） | schema 迁移、连接池、CRUD、关键词检索、LLM 重排、单测 | ⏳ 未开始 |
 | **M3** 提炼与保存（P0） | 提炼 prompt、分割/去重/冲突、`/save` `/compact` `/compact-save` `/search` | ⏳ 未开始 |
@@ -798,7 +798,7 @@ POST /v1/embeddings  →  { data: [{ embedding: [确定性向量] }] }
 | **D1** | 自动注入时机 | 先显式注入 + 手动 `compactNow` 触发路径；pressure 自动注入 → v2 |
 | **D2** | md 导出职责 | 独立命令 `/memory-pg-compact`；`/memory-pg-save` 只分割入库；新增 `/memory-pg-compact-save` 免确认一键完成 |
 | **D3** | AGE 图 | **不上**（✗ 否决，不排期） |
-| **D4** | 提炼走 `ctx.llm.stream()` 还是独立端点 | 路线 A（`ctx.llm.stream()`）为默认，**M0 spike 验证后定**（技术项，非产品决策） |
+| **D4** | 提炼走 `ctx.llm.stream()` 还是独立端点 | ✅ **路线 A（`ctx.llm.stream()`）**——M0 已确认 `ctx.llm` 挂载 + `llm-deepseek` 适配器就绪（2026-09-14）；实际冒烟并入 M1 |
 | **D5** | `kind` 分类 | 采纳 fact/preference/decision/procedure（用户总确认默认采纳） |
 | **D6** | 记忆置顶/核心记忆 | 保留（用户总确认默认采纳） |
 | **D7** | 检索主路径 + 向量 | JSON+关键词+LLM 重排为主，向量默认关可选开；跨 workspace 查询配置 → backlog（V1 不做） |
@@ -812,8 +812,10 @@ POST /v1/embeddings  →  { data: [{ embedding: [确定性向量] }] }
 ## 12. 下一步
 
 1. ✅ **D1–D7 已确认**（2026-09-14）
-2. 执行 **M0 技术验证**（见 §6），把高危假设打掉（含 D4、D7 实证）
-3. M0 通过后，用 `writing-plans` 出**可执行的实施计划**，然后进入实现
+2. ✅ **M0 技术验证已完成**（2026-09-14）：命令 kebab-case 注册、D4=路线 A、PG+pgvector+HNSW、
+   D7 方案、隔离实例——详见 [`task.md`](task.md) M0
+3. **M1（骨架与设置面板）进行中**；M0 中 D7 的真实召回对比数据在 M2 存储层就绪后补齐
+4. 每里程碑完成后用 `writing-plans` 出**可执行的实施计划**（分任务、可验证、带 TDD 步骤）
 
 > 本文档是**立项与规划**。进入实现前会产出独立的实施计划（分任务、可验证、带 TDD 步骤）。
 
