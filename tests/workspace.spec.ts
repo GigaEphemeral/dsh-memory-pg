@@ -99,6 +99,43 @@ describe('parseTargetFlag', () => {
     expect(r.target).toBeNull()
     expect(r.query).toBe('')
   })
+
+  it('tolerates multiple spaces between -p and target/query', () => {
+    const r = parseTargetFlag('-p   rag-demo    开发规范')
+    expect(r.target).toBe('rag-demo')
+    expect(r.query).toBe('开发规范')
+  })
+
+  it('tolerates tab separators', () => {
+    const r = parseTargetFlag('-p\trag-demo\t开发规范')
+    expect(r.target).toBe('rag-demo')
+    expect(r.query).toBe('开发规范')
+  })
+
+  it('tolerates full-width spaces', () => {
+    const r = parseTargetFlag('-p　rag-demo　　开发规范')
+    expect(r.target).toBe('rag-demo')
+    expect(r.query).toBe('开发规范')
+  })
+
+  it('tolerates leading/trailing whitespace around whole input', () => {
+    const r = parseTargetFlag('  -p rag-demo 开发规范  ')
+    expect(r.target).toBe('rag-demo')
+    expect(r.query).toBe('开发规范')
+  })
+
+  it('tolerates -p with no space before target (still parses)', () => {
+    // `-p` 与目标间无空格：按 "prag-demo" 无法分割，退化为无 flag（整段为查询）
+    const r = parseTargetFlag('-prag-demo 开发规范')
+    expect(r.target).toBeNull()
+    expect(r.query).toBe('-prag-demo 开发规范')
+  })
+
+  it('tolerates --project long flag with multiple spaces', () => {
+    const r = parseTargetFlag('--project    plugintest     登录 bug')
+    expect(r.target).toBe('plugintest')
+    expect(r.query).toBe('登录 bug')
+  })
 })
 
 describe('baseOf', () => {

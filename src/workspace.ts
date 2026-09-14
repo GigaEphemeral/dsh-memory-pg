@@ -73,15 +73,28 @@ export function baseOf(path: string): string {
  * 解析命令行的 `-p <目标>` flag：
  * `/memory-pg-search -p B项目 开发规范` → { target: 'B项目', query: '开发规范' }
  * 不带 `-p` → { target: null, query: 全部输入 }（默认搜当前项目）。
+ *
+ * 容错（2026-09-14 用户反馈"空格可能不是严格一个"）：
+ * - `-p`/`--project` 与目标之间：任意空白（空格/Tab/全角空格/多空格）
+ * - 目标与查询词之间：任意空白，折叠后解析
+ * - 命令输入前后多余空白：trim
+ * - 全角空格（\u3000）一并当作分隔符
  */
 export function parseTargetFlag(rawInput: string): { target: string | null; query: string } {
-  const text = String(rawInput ?? '').trim()
-  const m = text.match(/^(-p|--project)\s+([^\s-][\s\S]*)$/i)
+  const text = String(rawInput ?? '')
+    .replace(/[\u3000\u00a0]+/g, ' ') // 全角/不间断空格 → 半角
+    .trim()
+  if (!text) return { target: null, query: '' }
+  // `-p`/`--project` 开头（大小写不敏感），其后是目标 + 可选查询词
+  const m = text.match(/^(-p|--project)\b([\s\S]*)$/i)
   if (!m) return { target: null, query: text }
-  // `-p 名称 查询词...`：目标取第一个 token，剩余为查询词
-  const rest = m[2]!.trim()
+  const rest = (m[2] ?? '')
+    .replace(/\s+/g, ' ') // 连续空白折叠为单空格
+    .trim()
+  if (!rest) return { target: null, query: '' }
   const firstSpace = rest.search(/\s/)
   if (firstSpace === -1) {
+    // 只有目标，没有查询词
     return { target: rest, query: '' }
   }
   const target = rest.slice(0, firstSpace).trim()
