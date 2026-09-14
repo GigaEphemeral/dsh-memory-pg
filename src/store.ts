@@ -319,6 +319,14 @@ export class MemoryStore {
     return r.rows.map(row => ({ factId: Number(row.fact_id), content: String(row.content) }))
   }
 
+  /** 列出所有已存在记忆的 workspace_id（distinct，供跨项目检索候选；M4）。 */
+  async listWorkspaceIds(): Promise<string[]> {
+    const r = await this.poolOf().query<{ workspace_id: string }>(
+      `SELECT DISTINCT workspace_id FROM facts WHERE deleted_at IS NULL`,
+    )
+    return r.rows.map(row => String(row.workspace_id)).filter(Boolean)
+  }
+
   /** 健康检查：逐项（connect / pgvector / schema）。 */
   async health(config: DbConfig): Promise<HealthResult> {
     const steps: HealthStep[] = []

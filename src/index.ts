@@ -340,39 +340,46 @@ export function apply(ctx: Context): void {
       return out
     }
 
-    // sessionMeta（M4）：从 header.cwd 解析当前会话的 workspace。
-    // 优先 workspaceRegistry.resolveByPath(cwd)（稳定 WorkspaceId）；registry 不可用或
-    // cwd 未注册时，回退 cwd 末段（向后兼容 M3 的行为，保证已存数据 workspaceId 一致）。
+    // sessionMeta（M4 修正）：workspaceId 统一用 cwd 目录名（basename）。
+    // 为什么不用 workspaceRegistry.id：它是 UUID，不可读、依赖 registry 状态、跨实例不一致；
+    // 而 cwd 目录名（如 plugintest）是用户理解的"项目名"，且与 M3 已存数据（16 条 plugintest）
+    // 一致。此前用 registry id 导致新记忆进 UUID、旧记忆在目录名下互相搜不到（2026-09-14 实测）。
     const sessionMeta = async (agent: { id: string }): Promise<{ workspaceId: string; sessionId: string }> => {
       const sessions = ctx.get('sessions') as { get: (id: string) => { header: { cwd?: string } } | undefined } | undefined
       const session = sessions?.get(agent.id)
       const cwd = session?.header.cwd
-      let workspaceId = cwd ? baseOf(cwd) || 'workspace' : 'workspace'
-      try {
-        const registry = ctx.get('workspaceRegistry') as { resolveByPath: (p: string) => Promise<{ id: string } | undefined> } | undefined
-        if (registry && cwd) {
-          const ws = await registry.resolveByPath(cwd)
-          if (ws) workspaceId = ws.id
-        }
-      } catch {
-        // registry 解析失败时保持 cwd 末段
-      }
+      const workspaceId = cwd ? baseOf(cwd) || 'workspace' : 'workspace'
       return { workspaceId, sessionId: agent.id }
     }
 
-    // workspace 列表（跨项目检索的候选目标）。
-    const workspaceView = (ws: { id: string; path: string; title: string }): WorkspaceView =>
-      ({ id: ws.id, path: ws.path, title: ws.title })
+    // workspace 候选：registry list + 数据库已有 workspace_id 的并集。
+    // id 统一用目录名 basename（与 sessionMeta 一致），title 用 registry 的显示名。
+    const workspaceView = (id: string, title: string, path: string): WorkspaceView => ({ id, title, path })
 
-    const workspaceLister = (): readonly WorkspaceView[] => {
+    const workspaceLister = async (): Promise<readonly WorkspaceView[]> => {
+      const seen = new Map<string, WorkspaceView>()
       const registry = ctx.get('workspaceRegistry') as { list: () => Array<{ id: string; path: string; title: string }> } | undefined
-      if (!registry) return []
-      try { return registry.list().map(workspaceView) } catch { return [] }
+      if (registry) {
+        try {
+          for (const ws of registry.list()) {
+            const id = baseOf(ws.path) || ws.id
+            seen.set(id, workspaceView(id, ws.title || id, ws.path))
+          }
+        } catch { /* registry 不可用则忽略 */ }
+      }
+      // 数据库已有 workspace_id 兜底（registry 没覆盖但已有记忆的项目）
+      try {
+        const rows = await store.listWorkspaceIds()
+        for (const id of rows) {
+          if (!seen.has(id)) seen.set(id, workspaceView(id, id, ''))
+        }
+      } catch { /* store 未连则忽略 */ }
+      return [...seen.values()]
     }
 
-    // workspace 解析：目标名 → workspace（resolveWorkspace 纯函数 + registry 列表）。
+    // workspace 解析：目标名 → workspace（resolveWorkspace 纯函数 + 候选列表）。
     const workspaceResolver: (target: string) => Promise<import('./workspace.ts').WorkspaceResolveResult> = async (target) => {
-      const list = workspaceLister()
+      const list = await workspaceLister()
       const resolved = resolveWorkspace(list, target)
       if (resolved === null) {
         return { kind: 'not-found', candidates: list.map(w => `${w.title} (${w.id})`) }
@@ -380,24 +387,8 @@ export function apply(ctx: Context): void {
       return resolved
     }
 
-    // 结果写回对话框（M4）：session.append assistant/message → 进入 transcript。
-    // 副作用：该文本会成为一条模型可见的 assistant 消息（后续请求会携带）。
-    const appendAssistant: CommandDeps['appendAssistant'] = async (agent, text) => {
-      const sessions = ctx.get('sessions') as { get: (id: string) => { append: (type: string, data: unknown, opts?: unknown) => unknown } | undefined } | undefined
-      const session = sessions?.get(agent.id)
-      if (!session) return
-      session.append('assistant/message', {
-        stream: [],
-        turn: 0,
-        step: 0,
-        message: {
-          id: `memory-pg-${Date.now()}`,
-          role: 'assistant',
-          content: [{ type: 'text', text }],
-          source: { kind: 'model', provider: 'memory-pg', model: 'memory-pg' },
-        },
-      }, { surfaceOp: 'append' })
-    }
+    // 结果写回对话框：用户要求回退（2026-09-14）。命令结果只显示在命令卡片，不写进对话流。
+    const appendAssistant: CommandDeps['appendAssistant'] = null
 
     const memoryDir = join(process.cwd(), '.memory-pg-files')
     const deps: CommandDeps = {

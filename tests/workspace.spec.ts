@@ -51,6 +51,18 @@ describe('resolveWorkspace', () => {
     expect(r?.kind).toBe('not-found')
   })
 
+  it('resolves stored workspace_id (dir basename) as -p target', () => {
+    // 数据库里已存记忆的 workspace_id 是目录名（M4 修复后统一），
+    // workspaceLister 把它作为候选，-p plugintest2 应能命中。
+    const stored: WorkspaceView[] = [
+      { id: 'plugintest', title: 'plugintest', path: 'D:\\000CODE\\plugintest' },
+      { id: 'plugintest2', title: 'plugintest2', path: 'D:\\000CODE\\plugintest2' },
+    ]
+    const r = resolveWorkspace(stored, 'plugintest2')
+    expect(r?.kind).toBe('ok')
+    if (r?.kind === 'ok') expect(r.workspace.id).toBe('plugintest2')
+  })
+
   it('empty input returns null', () => {
     expect(resolveWorkspace(WS, '  ')).toBeNull()
     expect(resolveWorkspace(WS, '')).toBeNull()

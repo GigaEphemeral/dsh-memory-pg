@@ -25,7 +25,7 @@ export interface MemoryToolsRuntime {
   /** 按 agent/session 解析当前会话的 workspaceId（默认检索作用域） */
   workspaceIdOfAgent: (agent: { id: string } | undefined) => Promise<string>
   /** 可用 workspace 列表（未知项目时给候选） */
-  listWorkspaces: () => readonly WorkspaceView[]
+  listWorkspaces: () => Promise<readonly WorkspaceView[]>
 }
 
 /** 从 DSH 运行时解析 peer 包（参考 dsh-local-vector-memory/lib/peers.mjs）。 */
@@ -95,7 +95,7 @@ export async function registerMemoryTools(ctx: Context, runtime: MemoryToolsRunt
     if (project && project.trim()) {
       const target = await runtime.resolveTarget(project)
       if (target === null) {
-        const candidates = runtime.listWorkspaces().map(w => `${w.title} (${w.id})`).slice(0, 10).join('、')
+        const candidates = (await runtime.listWorkspaces()).map(w => `${w.title} (${w.id})`).slice(0, 10).join('、')
         return `memory_search: 未找到项目「${project}」${candidates ? `；已知项目：${candidates}` : ''}`
       }
       workspaceId = target.id

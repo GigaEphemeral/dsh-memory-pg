@@ -33,7 +33,7 @@ export type SessionMetaProvider = (agent: { id: string }) => Promise<{ workspace
 export type WorkspaceResolver = (target: string) => Promise<WorkspaceResolveResult>
 
 /** 当前可用的 workspace 列表（供命令展示 / 帮助）。 */
-export type WorkspaceLister = () => readonly WorkspaceView[]
+export type WorkspaceLister = () => Promise<readonly WorkspaceView[]>
 
 /** 把一段文本写回会话对话框（session.append assistant/message）。 */
 export type AppendAssistant = (agent: { id: string }, text: string) => Promise<void>
