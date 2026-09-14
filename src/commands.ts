@@ -30,7 +30,11 @@ export type SessionMetaProvider = (agent: { id: string }) => Promise<{ workspace
 /** 命令依赖集合。 */
 export interface CommandDeps {
   store: MemoryStore
-  distillCaller: LlmCaller
+  /**
+   * 提炼 LLM caller 工厂：传入当前 agent 以取会话最近一次路由的 provider/model
+   * （官方 compaction 同款回退链，见 index.ts makeDistillCaller）。
+   */
+  distillCaller: (agent: { id: string }) => LlmCaller
   contextProvider: ContextProvider
   sessionMeta: SessionMetaProvider
   /** 记忆文件目录（compact 生成 md 用；index.ts 从配置读） */
@@ -104,7 +108,7 @@ export function registerMemoryCommands(ctx: Context, deps: CommandDeps): Array<(
       try {
         const meta = await deps.sessionMeta(invocation.agent)
         const context = await deps.contextProvider(invocation.agent)
-        const facts = await distill(context, deps.distillCaller)
+        const facts = await distill(context, deps.distillCaller(invocation.agent))
         const res = await persistFacts(deps.store, meta.workspaceId, meta.sessionId, facts)
         return { kind: 'success', text: summaryText('save', facts, res) }
       } catch (error) {
@@ -122,7 +126,7 @@ export function registerMemoryCommands(ctx: Context, deps: CommandDeps): Array<(
       try {
         const meta = await deps.sessionMeta(invocation.agent)
         const context = await deps.contextProvider(invocation.agent)
-        const facts = await distill(context, deps.distillCaller)
+        const facts = await distill(context, deps.distillCaller(invocation.agent))
         const res = await persistFacts(deps.store, meta.workspaceId, meta.sessionId, facts)
         return { kind: 'success', text: summaryText('compact-save', facts, res) }
       } catch (error) {
@@ -140,7 +144,7 @@ export function registerMemoryCommands(ctx: Context, deps: CommandDeps): Array<(
       try {
         const meta = await deps.sessionMeta(invocation.agent)
         const context = await deps.contextProvider(invocation.agent)
-        const facts = await distill(context, deps.distillCaller)
+        const facts = await distill(context, deps.distillCaller(invocation.agent))
         // 生成 md 文件（不入库）
         const { writeFile, mkdir } = await import('node:fs/promises')
         const { join } = await import('node:path')

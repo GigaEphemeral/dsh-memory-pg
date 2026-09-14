@@ -240,39 +240,73 @@ export function apply(ctx: Context): void {
     // context provider（session.deriveMessages）、sessionMeta（header.cwd）。
     // store 已在路由段 connectFromPrefs(scope.get()) 建立并 migrate。
 
-    // distill caller：包一层 ctx.llm.stream（D4 路线 A）。
+    // distill caller 工厂：包一层 ctx.llm.stream（D4 路线 A）。
     // 不照搬官方 compaction 的前缀缓存/截断检测机制（D-M3-2）：我们的提炼是用户手动触发，
     // 时机随机，前缀缓存收益不确定；保持简单 caller。
+    // 但两处**契约级**吸收（问题4修复，2026-09-14 实测）：
+    // 1) provider/model 选择：优先取该会话最近一次路由的 requestHeader().config
+    //    （官方 summarizer.ts 的 latest 回退链），而不是 listModels()[0]——后者可能命中
+    //    无效模型（deepseek-flash 组合曾导致 stream 0 输出）。
+    // 2) finish 检查：adapter 失败不抛异常，而是产出 finish chunk（reason: error/aborted/
+    //    max-tokens），必须检查并报错（官方 BlockAssembler.finish + finishError）。
     const llm = ctx.get('llm')
-    const distillCaller: LlmCaller = async (system, user) => {
+    const makeDistillCaller = (agent: { id: string }): LlmCaller => async (system, user) => {
       if (llm === undefined) throw new Error('ctx.llm not mounted')
-      const providers = llm.listProviders()
-      const provider = providers[0]?.id
-      if (!provider) throw new Error('no llm provider registered')
-      let model = provider
+      // 1) provider/model：requestHeader().config → listProviders()[0]（回退）
+      let provider: string | undefined
+      let model: string | undefined
       try {
-        const models = await llm.listModels(provider)
-        if (models.length > 0) model = models[0].id
+        const sessions = ctx.get('sessions') as { get: (id: string) => { requestHeader: () => { config?: { provider?: string; model?: string } } | undefined } | undefined } | undefined
+        const header = sessions?.get(agent.id)?.requestHeader?.()
+        if (header?.config?.provider) {
+          provider = header.config.provider
+          model = header.config.model ?? header.config.provider
+        }
       } catch {
-        // 保持 provider 占位
+        // 回退到 provider 目录
+      }
+      if (!provider) {
+        const providers = llm.listProviders()
+        provider = providers[0]?.id
+        if (!provider) throw new Error('no llm provider registered')
+        model = provider
+        try {
+          const models = await llm.listModels(provider)
+          if (models.length > 0) model = models[0].id
+        } catch {
+          // 保持 provider 占位
+        }
       }
       const chunks: string[] = []
+      let finishReason: string | undefined
+      let finishDetail = ''
       const stream = llm.stream({
         provider,
         model,
+        sessionId: agent.id,
         messages: [
           { role: 'system', content: [{ type: 'text', text: system }] },
           { role: 'user', content: [{ type: 'text', text: user }] },
         ],
       } as never)
-      for await (const chunk of stream as AsyncIterable<{ type: string; text?: string; block?: { type: string; text?: string } }>) {
+      // 2) 遍历 chunk：收集 text-delta/block-end，同时捕获 finish reason
+      for await (const chunk of stream as AsyncIterable<{ type: string; text?: string; block?: { type: string; text?: string }; reason?: { kind?: string; failure?: { message?: string } } }>) {
         if (chunk.type === 'text-delta' && typeof chunk.text === 'string') chunks.push(chunk.text)
         else if (chunk.type === 'block-end' && chunk.block?.type === 'text' && typeof chunk.block.text === 'string') {
           chunks.push(chunk.block.text)
+        } else if (chunk.type === 'finish' && chunk.reason) {
+          finishReason = chunk.reason.kind
+          finishDetail = chunk.reason.failure?.message ?? ''
         }
       }
+      if (finishReason === 'error' || finishReason === 'aborted') {
+        throw new Error(`llm stream ${finishReason}${finishDetail ? `: ${finishDetail}` : ''}`)
+      }
+      if (finishReason === 'max-tokens') {
+        throw new Error('llm stream truncated at max tokens (incomplete distill)')
+      }
       const out = chunks.join('')
-      console.error(`[memory-pg][diag] distillCaller: provider=${provider} model=${model} system=${system.length}chars user=${user.length}chars raw=${out.length}chars rawHead=${JSON.stringify(out.slice(0, 120))}`)
+      console.error(`[memory-pg][diag] distillCaller: provider=${provider} model=${model} finish=${finishReason ?? 'none'} system=${system.length}chars user=${user.length}chars raw=${out.length}chars rawHead=${JSON.stringify(out.slice(0, 120))}`)
       return out
     }
 
@@ -313,7 +347,7 @@ export function apply(ctx: Context): void {
     const memoryDir = join(process.cwd(), '.memory-pg-files')
     const deps: CommandDeps = {
       store,
-      distillCaller,
+      distillCaller: makeDistillCaller,
       contextProvider,
       sessionMeta,
       memoryDir,
