@@ -1,5 +1,6 @@
-# dsh-memory-pg bundle patch.
+# @GigaEphemeral/dsh-memory-pg bundle patch.
 # 安装后 profile boot 会把本插件行插入层栈（bundle 形态，重启生效）。
+# name 必须是 npm 包名（loader 用它解析模块 specifier，scoped 包名支持）。
 - insert:
     - id: memory-pg
-      name: 'dsh-memory-pg'
+      name: '@GigaEphemeral/dsh-memory-pg'

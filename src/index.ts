@@ -37,7 +37,7 @@ interface SettingsView {
   externalDisable?: boolean
 }
 
-export const name = 'dsh-memory-pg'
+export const name = '@GigaEphemeral/dsh-memory-pg'
 
 export function apply(ctx: Context): void {
   // ── 设置命名空间注册（可选服务：settings 缺失时插件照常工作） ─────
