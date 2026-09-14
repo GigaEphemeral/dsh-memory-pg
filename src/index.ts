@@ -18,7 +18,9 @@ import { SETTINGS_NS, type MemoryPgPrefs } from './prefs.ts'
 import { PrefsSchema } from './config.ts'
 import { MemoryStore, type DbConfig } from './store.ts'
 import { registerMemoryCommands, type CommandDeps } from './commands.ts'
+import { registerMemoryTools } from './tools.ts'
 import type { LlmCaller } from './distill.ts'
+import { resolveWorkspace, baseOf, type WorkspaceView } from './workspace.ts'
 import { join } from 'node:path'
 
 /** 连接测试分项步骤结果。 */
@@ -338,13 +340,63 @@ export function apply(ctx: Context): void {
       return out
     }
 
-    // sessionMeta：从 header.cwd 推 workspaceId（取 cwd 最后一段；无则用 sessionId 兜底）。
+    // sessionMeta（M4）：从 header.cwd 解析当前会话的 workspace。
+    // 优先 workspaceRegistry.resolveByPath(cwd)（稳定 WorkspaceId）；registry 不可用或
+    // cwd 未注册时，回退 cwd 末段（向后兼容 M3 的行为，保证已存数据 workspaceId 一致）。
     const sessionMeta = async (agent: { id: string }): Promise<{ workspaceId: string; sessionId: string }> => {
       const sessions = ctx.get('sessions') as { get: (id: string) => { header: { cwd?: string } } | undefined } | undefined
       const session = sessions?.get(agent.id)
       const cwd = session?.header.cwd
-      const workspaceId = cwd ? cwd.replace(/[\\/]+$/g, '').split(/[\\/]/).pop() ?? 'workspace' : 'workspace'
+      let workspaceId = cwd ? baseOf(cwd) || 'workspace' : 'workspace'
+      try {
+        const registry = ctx.get('workspaceRegistry') as { resolveByPath: (p: string) => Promise<{ id: string } | undefined> } | undefined
+        if (registry && cwd) {
+          const ws = await registry.resolveByPath(cwd)
+          if (ws) workspaceId = ws.id
+        }
+      } catch {
+        // registry 解析失败时保持 cwd 末段
+      }
       return { workspaceId, sessionId: agent.id }
+    }
+
+    // workspace 列表（跨项目检索的候选目标）。
+    const workspaceView = (ws: { id: string; path: string; title: string }): WorkspaceView =>
+      ({ id: ws.id, path: ws.path, title: ws.title })
+
+    const workspaceLister = (): readonly WorkspaceView[] => {
+      const registry = ctx.get('workspaceRegistry') as { list: () => Array<{ id: string; path: string; title: string }> } | undefined
+      if (!registry) return []
+      try { return registry.list().map(workspaceView) } catch { return [] }
+    }
+
+    // workspace 解析：目标名 → workspace（resolveWorkspace 纯函数 + registry 列表）。
+    const workspaceResolver: (target: string) => Promise<import('./workspace.ts').WorkspaceResolveResult> = async (target) => {
+      const list = workspaceLister()
+      const resolved = resolveWorkspace(list, target)
+      if (resolved === null) {
+        return { kind: 'not-found', candidates: list.map(w => `${w.title} (${w.id})`) }
+      }
+      return resolved
+    }
+
+    // 结果写回对话框（M4）：session.append assistant/message → 进入 transcript。
+    // 副作用：该文本会成为一条模型可见的 assistant 消息（后续请求会携带）。
+    const appendAssistant: CommandDeps['appendAssistant'] = async (agent, text) => {
+      const sessions = ctx.get('sessions') as { get: (id: string) => { append: (type: string, data: unknown, opts?: unknown) => unknown } | undefined } | undefined
+      const session = sessions?.get(agent.id)
+      if (!session) return
+      session.append('assistant/message', {
+        stream: [],
+        turn: 0,
+        step: 0,
+        message: {
+          id: `memory-pg-${Date.now()}`,
+          role: 'assistant',
+          content: [{ type: 'text', text }],
+          source: { kind: 'model', provider: 'memory-pg', model: 'memory-pg' },
+        },
+      }, { surfaceOp: 'append' })
     }
 
     const memoryDir = join(process.cwd(), '.memory-pg-files')
@@ -353,9 +405,36 @@ export function apply(ctx: Context): void {
       distillCaller: makeDistillCaller,
       contextProvider,
       sessionMeta,
+      workspaceResolver,
+      workspaceLister,
+      appendAssistant,
       memoryDir,
     }
     const disposers = registerMemoryCommands(ctx, deps)
+
+    // ── M4：memory_search 模型工具 ────────────────────────────────
+    // 复用 commands 的 workspace 解析能力；当前会话 workspaceId 取自 sessionMeta。
+    const toolRuntime = {
+      store,
+      resolveTarget: async (target: string) => {
+        const list = workspaceLister()
+        const resolved = resolveWorkspace(list, target)
+        return resolved?.kind === 'ok' ? resolved.workspace : null
+      },
+      workspaceIdOfAgent: async (agent?: { id: string }) => {
+        if (!agent) return 'workspace'
+        return (await sessionMeta(agent)).workspaceId
+      },
+      listWorkspaces: workspaceLister,
+    }
+    void registerMemoryTools(ctx, toolRuntime).then((disposer) => {
+      if (disposer) {
+        ctx.effect(() => disposer, 'dsh-memory-pg.tools')
+      }
+    }).catch((error) => {
+      console.error('[memory-pg] tools registration failed', error)
+    })
+
     ctx.effect(() => () => {
       for (const d of disposers) d()
       void store.close()

@@ -105,18 +105,27 @@
 
 ---
 
-## M4 — 注入（P0）
+## M4 — 跨 workspace 记忆检索（P0）
 
-> 目的：记忆重新注入上下文。参考：README §4.5、`dsh-local-vector-memory/index.mjs` 的
-> `agent/pre-step` hook。
+> 目的：在 A 项目里能查到 B 项目的记忆。参考：README §7.1（工具）、`workspaceRegistry` 服务
+> （DSH 正式 workspace 概念：id/path/title）。
+> **范围调整（2026-09-14 用户指示）**：原 M4 的「recall.mjs 注入决策」「/memory-pg-load 注入」
+> 不做，迁移到 Future；M4 只做**跨 workspace 检索**。
+>
+> **用户提出的交互**：`/memory-pg-search -p B项目名称 开发规范` → 从 B 项目里搜出记忆；
+> 不带 `-p` 默认搜当前项目。`-p` 是用户自拟的 flag，**可行性已研究**：命令的
+> `invocation.rawInput` 是原始文本，无内置参数解析，但 handler 内可自解析 `-p <name>` +
+> 剩余查询词。跨项目定位用 `workspaceRegistry`（按 title/path 解析），不用 cwd 末段。
 
 | 状态 | 任务 | 验收 | 备注 |
 |---|---|---|---|
-| [ ] | `recall.mjs` 注入决策 + 预算裁剪 | 按 workspace 检索高价值记忆；注入不超预算 | 纯函数可测 |
-| [ ] | `/memory-pg-load` | 把本项目记忆整体注入当前上下文 | 语义：注入（有副作用），见疑问点 1 |
-| [ ] | `memory_search` 工具（`defineTool`） | 模型可主动检索；schema 无冲突 | §7.1；先 `Tool.listTools` 查冲突 |
+| [ ] | sessionMeta 改用 `workspaceRegistry` | 当前会话的 workspaceId = 稳定 WorkspaceId（非 cwd 末段）；可按 title/path 解析任意项目 | M3 用 cwd 末段，跨项目不可靠 |
+| [ ] | `/memory-pg-search` 支持 `-p <workspace>` | `-p B项目 开发规范` → 搜 B 项目记忆；无 `-p` → 搜当前项目；未知项目给明确报错 | 自解析 rawInput；跨项目是 P0 核心 |
+| [ ] | 命令结果进对话框 | compact/search 结果经 `session.append('assistant/message')` 显示在对话流（非独立命令卡片） | 见「疑问点：另一层空间」；副作用=结果进模型历史 |
+| [ ] | `memory_search` 工具（`defineTool`） | 模型可主动检索；schema 含 `{ project?, query }`；无冲突 | §7.1；先 `Tool.listTools` 查冲突 |
 
-**退出标准**：新会话中能 `load` 出前一会话保存的记忆，并影响模型回答。
+**退出标准**：在 A 项目的会话里 `-p B项目 开发规范` 能搜出 B 项目已保存的记忆；
+不带 `-p` 默认搜 A 自身；compact/search 结果以对话框形式返回。
 
 ---
 
@@ -128,7 +137,7 @@
 | [ ] | 可选向量：embedding 客户端 + 维度校验 + 向量检索 + RRF 合并 | 开关开启才写入/查询；维度与库比对；RRF `1/(k+rank)` k=60 | F-14；默认关（D7）；§16.3 |
 | [ ] | 记忆文件管理（compact 产物） | 列表/打开/删除生成的 md 文件 | F-16 关联 |
 | [ ] | 记忆管理：列表/编辑/软删除 | 命令或 UI 查看/编辑/软删/恢复 | F-16 |
-| [ ] | 上下文压力触发的自动注入 | 挂 `agent/pre-step` + `ctx.compaction` 压力读；注入预算裁剪 | F-17；D1（v1 已做显式，此为 v1.5/v2 项，见 Future） |
+| [x]→📋 | 上下文压力触发的自动注入 | ~~挂 `agent/pre-step` + `ctx.compaction` 压力读；注入预算裁剪~~ → **已迁 Future**（2026-09-14 用户指示） | F-17；D1（v1 已做显式，此为 v1.5/v2 项） |
 
 **退出标准**：P1 项完成即可（不影响 v1 P0 交付）。
 
@@ -148,8 +157,10 @@
 | ID | 特性 | 触发条件/备注 |
 |---|---|---|
 | F-19 | AGE 图：实体关系与取代链 | D3 否决；需先有具体图查询用例（如「bug 与历史问题共享根因模块」） |
-| F-20 | 跨 workspace 查询 / 指定 workspace 配置 | V1 明确不做；数据库可能存多 workspace 向量时再评估 |
-| F-17(v2) | 上下文压力自动注入 | D1：v1 只做显式注入 + 手动 `compactNow`；自动触发并入 v2 |
+| F-17(v2) | 上下文压力自动注入 | 2026-09-14 用户指示迁入 Future；D1：v1 只做显式注入 + 手动 `compactNow` |
+| — | **recall.mjs 注入决策 + 预算裁剪** | 2026-09-14 用户指示迁入 Future（原 M4 第 1 项） |
+| — | **`/memory-pg-load` 注入上下文** | 2026-09-14 用户指示迁入 Future（原 M4 第 2 项；语义：注入有副作用，见疑问点 1） |
+| F-20 | 跨 workspace 查询 / 指定 workspace 配置 | ~~V1 明确不做~~ → **M4 已做跨 workspace 检索**（2026-09-14 用户指示）；其余配置面仍 backlog |
 | — | embedding 突变点分割 | §3.2 方案 D：v1 不做（对结构化事实是过度设计），留给无结构文本场景 |
 | — | 多用户/多租户权限、多人协作、独立 Web 管理后台 | §1 非目标（YAGNI） |
 
@@ -163,8 +174,7 @@
 | M1 | F-01–F-05（部分）、F-06 前置 | ✅ 代码完成 + 安装 + 测试实例启动（2026-09-14）；UI 实机验证待用户调试 |
 | M2 | F-01/F-02/F-06 | ✅ 完成（2026-09-14 17:09:56；测试报告 `测试报告/m2.md` 待审批） |
 | M3 | F-07–F-12 | ✅ 完成（2026-09-14 18:31:44；官方 compaction P1 四项已补足；测试报告 `测试报告/m3.md` 待审批） |
-| M4 | F-13/F-15 | ⏳ 待 M3 审批后启动（下一步） |
-| M4 | F-13/F-15 | ⏳ 未开始 |
-| M5 | F-05/F-14/F-16/F-17 | ⏳ 未开始 |
+| M4 | F-20 跨 workspace 检索（-p 参数 + memory_search 工具 + 结果进对话框） | 🔄 进行中（2026-09-14 范围调整：recall/load 迁 Future） |
+| M5 | F-05/F-14/F-16 | ⏳ 未开始（自动注入 F-17 已迁 Future） |
 | M6 | F-19 | ✗ 移除 |
-| Future | F-20 等 | 📋 backlog |
+| Future | F-17/recall/load/F-20 配置面 等 | 📋 backlog |
