@@ -271,21 +271,34 @@ export function apply(ctx: Context): void {
           chunks.push(chunk.block.text)
         }
       }
-      return chunks.join('')
+      const out = chunks.join('')
+      console.error(`[memory-pg][diag] distillCaller: provider=${provider} model=${model} system=${system.length}chars user=${user.length}chars raw=${out.length}chars rawHead=${JSON.stringify(out.slice(0, 120))}`)
+      return out
     }
 
     // context provider：读 agent 会话的 deriveMessages() 拼文本。
+    // 问题4诊断：输出关键链路的可观测信息（sessions 服务/session 命中/消息条数/文本长度），
+    // 便于在 err.log 定位「提炼 0 条」根因；定位后按需降级为安静实现。
     const contextProvider = async (agent: { id: string }): Promise<string> => {
       const sessions = ctx.get('sessions') as { get: (id: string) => { deriveMessages: () => Array<{ role: string; content: Array<{ type: string; text?: string }> }> } | undefined } | undefined
-      const session = sessions?.get(agent.id)
-      if (!session) return ''
+      if (sessions === undefined) {
+        console.error(`[memory-pg][diag] contextProvider: ctx.get('sessions') = undefined`)
+        return ''
+      }
+      const session = sessions.get(agent.id)
+      if (session === undefined) {
+        console.error(`[memory-pg][diag] contextProvider: sessions.get('${agent.id}') = undefined (agent 非 live session?)`)
+        return ''
+      }
       const msgs = session.deriveMessages()
       const lines: string[] = []
       for (const m of msgs) {
         const text = m.content.map(b => (b.type === 'text' ? b.text ?? '' : '')).filter(Boolean).join(' ')
         if (text.trim()) lines.push(`${m.role}: ${text}`)
       }
-      return lines.slice(-40).join('\n') // 最近 40 条
+      const out = lines.slice(-40).join('\n')
+      console.error(`[memory-pg][diag] contextProvider: agent=${agent.id} derived=${msgs.length} textLines=${lines.length} chars=${out.length}`)
+      return out
     }
 
     // sessionMeta：从 header.cwd 推 workspaceId（取 cwd 最后一段；无则用 sessionId 兜底）。

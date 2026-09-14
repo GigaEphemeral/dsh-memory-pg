@@ -1,22 +1,25 @@
 /**
- * dsh-memory-pg Client half：设置面板「dsh_memory_pg」分区（settings.section）。
+ * dsh-memory-pg Client half：设置面板「向量记忆」分区（settings.section）。
  *
  * 契约（0.1.5-rc.1 inspect 核实）：
  * - settings.section 是 list 槽：注册 { name, id, order, label }，一个列表项 = 一个设置页
- * - 左侧列表显示 label（用户要求：左下角设置 → 左侧列表出现 dsh_memory_pg）
- * - 读写经插件 fenced 路由（/memory-pg/api/settings.*），因为 settings RPC 只服务白名单 ns
+ * - 左侧列表显示 label（用户要求：左下角设置 → 左侧列表出现「向量记忆」）
+ * - **owner 渲染时只传 { close } + hooks，不传 prefs**（SettingsRoot.tsx 实测），
+ *   因此组件必须自己经 fenced 路由 `/memory-pg/api/settings.get` 读真实值初始化表单，
+ *   保存后主动刷新——否则切换设置页再回来会用默认值重置（问题1修复）。
  * - React.createElement（无 JSX 转换）；浏览器原生 fetch（同源）
  *
- * 问题1（连接状态）：连接状态卡片 —— 查看已连接 PG 的状态（是否断开）、
- *   暂停 / 恢复 / 删除连接（store 状态机 connected/paused/disconnected，路由 connection.*）。
- * 问题3（圆角统一）：面板统一 8px 圆角（功能优先，仅样式层）。
+ * 问题1（勾选丢失）：组件自读 settings 初始化 + 保存后刷新，不依赖 props.prefs。
+ * 问题2（连接测试位置）：「测试数据库连接」移到数据库字段正下方，避免误以为是向量连接测试。
+ * 问题3（改名）：label「向量记忆」+ 面板标题「向量记忆配置」。
+ * 问题4（连接状态卡）：重新探测 / 暂停 / 恢复 / 删除连接（/memory-pg/api/connection.*）。
  */
 import React from 'react'
 import { SETTINGS_NS, MEMORY_PG_PREFS_DEFAULTS, parsePrefs, type MemoryPgPrefs } from '../prefs.ts'
 
 const ROUTE = '/memory-pg/api'
 
-/** 统一圆角（问题3）。 */
+/** 统一圆角（问题3，样式层）。 */
 const ROUND = 8
 /** 统一控件/卡片样式（内联，轻量）。 */
 const inputStyle: React.CSSProperties = {
@@ -46,6 +49,7 @@ const rowStyle: React.CSSProperties = {
   marginTop: 8,
   flexWrap: 'wrap',
 }
+const labelStyle: React.CSSProperties = { display: 'block', marginBottom: 8 }
 
 /** 连接状态视图（host 侧 /connection.status 返回）。 */
 interface ConnectionView {
@@ -148,15 +152,34 @@ function ConnectionCard(): React.ReactElement {
       }, '删除连接'),
     ),
     React.createElement('div', { style: { marginTop: 6, color: '#57606a', fontSize: 12 } },
-      '「连接测试」是只读分项检测；「暂停/恢复/删除」管理实际连接池。'),
+      '「测试数据库连接」是只读分项检测；「暂停/恢复/删除」管理实际连接池。'),
   )
 }
 
-/** 设置面板主体：表单 + 连接测试 + 连接状态卡。 */
-function MemoryPgSettingsPanel(props: { prefs: MemoryPgPrefs }): React.ReactElement {
-  const [form, setForm] = React.useState<MemoryPgPrefs>({ ...props.prefs })
+/** 设置面板主体：数据库配置（含连接测试）→ 向量配置 → 连接状态卡。 */
+function MemoryPgSettingsPanel(): React.ReactElement {
+  // 问题1修复：不再依赖 props.prefs（owner 不传），挂载时自读 settings 初始化表单。
+  const [form, setForm] = React.useState<MemoryPgPrefs>({ ...MEMORY_PG_PREFS_DEFAULTS })
+  const [loaded, setLoaded] = React.useState(false)
   const [testing, setTesting] = React.useState(false)
   const [steps, setSteps] = React.useState<Array<{ name: string; ok: boolean; detail?: string }>>([])
+  const [saveStatus, setSaveStatus] = React.useState('')
+
+  const load = async (): Promise<void> => {
+    try {
+      const r = await apiGet<{ ok: boolean; value: { value?: unknown } }>('/settings.get')
+      if (r.ok && r.value.value !== undefined) {
+        setForm(parsePrefs(r.value.value))
+      }
+    } catch {
+      /* 路由未就绪时用默认值 */
+    } finally {
+      setLoaded(true)
+    }
+  }
+  React.useEffect(() => {
+    void load()
+  }, [])
 
   const set = (key: keyof MemoryPgPrefs, value: unknown): void => {
     setForm(prev => ({ ...prev, [key]: value }))
@@ -164,12 +187,20 @@ function MemoryPgSettingsPanel(props: { prefs: MemoryPgPrefs }): React.ReactElem
 
   const save = async (): Promise<void> => {
     try {
-      await apiPost<{ ok: boolean; value?: { value?: unknown } }>('/settings.update', {
+      const r = await apiPost<{ ok: boolean; value?: { value?: unknown } }>('/settings.update', {
         patch: { ...form },
       })
+      if (r.ok) {
+        setSaveStatus('已保存 ✓')
+        // 保存成功后重新读（revision 已变），表单与库中一致
+        if (r.value?.value !== undefined) setForm(parsePrefs(r.value.value))
+      } else {
+        setSaveStatus('保存失败：' + String((r as { error?: string }).error ?? '未知错误'))
+      }
     } catch (error) {
-      console.error('memory-pg settings save failed', error)
+      setSaveStatus('保存失败：' + String(error))
     }
+    setTimeout(() => setSaveStatus(''), 3000)
   }
 
   const runTest = async (): Promise<void> => {
@@ -188,7 +219,7 @@ function MemoryPgSettingsPanel(props: { prefs: MemoryPgPrefs }): React.ReactElem
   }
 
   const field = (label: string, key: keyof MemoryPgPrefs, type = 'text'): React.ReactElement =>
-    React.createElement('label', { style: { display: 'block', marginBottom: 8 } },
+    React.createElement('label', { style: labelStyle },
       React.createElement('span', null, label),
       React.createElement('input', {
         type,
@@ -201,29 +232,23 @@ function MemoryPgSettingsPanel(props: { prefs: MemoryPgPrefs }): React.ReactElem
       }),
     )
 
+  if (!loaded) {
+    return React.createElement('div', null,
+      React.createElement('h3', null, '向量记忆配置'),
+      React.createElement('div', { style: { color: '#57606a' } }, '读取配置中…'))
+  }
+
   return React.createElement('div', null,
-    React.createElement('h3', null, 'dsh_memory_pg 配置'),
+    React.createElement('h3', null, '向量记忆配置'),
+    // ── 数据库配置 + 连接测试（问题2：测试按钮紧跟数据库字段，标注清楚） ──
     field('数据库 Host', 'dbHost'),
     field('数据库 Port', 'dbPort', 'number'),
     field('数据库 User', 'dbUser'),
     field('数据库 Password', 'dbPassword', 'password'),
     field('数据库 Name', 'dbName'),
-    React.createElement('hr', null),
-    field('Embedding Base URL', 'embeddingBaseUrl'),
-    field('Embedding Model', 'embeddingModel'),
-    field('向量维度', 'vectorDim', 'number'),
-    React.createElement('label', { style: { display: 'block', marginBottom: 8 } },
-      React.createElement('input', {
-        type: 'checkbox',
-        checked: form.vectorEnabled,
-        onChange: (e: React.ChangeEvent<HTMLInputElement>) => set('vectorEnabled', e.target.checked),
-      }),
-      React.createElement('span', { style: { marginLeft: 4 } }, '启用向量检索（默认关）'),
-    ),
     React.createElement('div', { style: rowStyle },
       React.createElement('button', { style: buttonStyle, onClick: runTest, disabled: testing },
-        testing ? '测试中…' : '连接测试'),
-      React.createElement('button', { style: buttonStyle, onClick: save }, '保存'),
+        testing ? '测试中…' : '测试数据库连接'),
     ),
     steps.length > 0
       ? React.createElement('ul', null,
@@ -233,14 +258,31 @@ function MemoryPgSettingsPanel(props: { prefs: MemoryPgPrefs }): React.ReactElem
           ),
         )
       : null,
+    React.createElement('hr', null),
+    // ── 向量配置 ──
+    field('Embedding Base URL', 'embeddingBaseUrl'),
+    field('Embedding Model', 'embeddingModel'),
+    field('向量维度', 'vectorDim', 'number'),
+    React.createElement('label', { style: labelStyle },
+      React.createElement('input', {
+        type: 'checkbox',
+        checked: form.vectorEnabled,
+        onChange: (e: React.ChangeEvent<HTMLInputElement>) => set('vectorEnabled', e.target.checked),
+      }),
+      React.createElement('span', { style: { marginLeft: 4 } }, '启用向量检索（默认关）'),
+    ),
+    React.createElement('div', { style: rowStyle },
+      React.createElement('button', { style: buttonStyle, onClick: save }, '保存'),
+      saveStatus !== '' ? React.createElement('span', { style: { color: '#1a7f37', fontSize: 12 } }, saveStatus) : null,
+    ),
     React.createElement(ConnectionCard),
   )
 }
 
 /** settings.section 分区组件（列表槽，id = SETTINGS_NS）。 */
-function SettingsSection(props: { prefs?: unknown }): React.ReactElement {
-  const prefs = parsePrefs(props.prefs ?? MEMORY_PG_PREFS_DEFAULTS)
-  return React.createElement(MemoryPgSettingsPanel, { prefs })
+function SettingsSection(): React.ReactElement {
+  // 不再接收 prefs prop（owner 不传）；面板内部自读 settings。
+  return React.createElement(MemoryPgSettingsPanel)
 }
 
 export function apply(ctx: { get(name: string): unknown; slots?: unknown }): void {
@@ -256,7 +298,7 @@ export function apply(ctx: { get(name: string): unknown; slots?: unknown }): voi
         name: 'settings.section',
         id: SETTINGS_NS,
         order: 100,
-        label: () => 'dsh_memory_pg',
+        label: () => '向量记忆',
       },
       SettingsSection,
     )
