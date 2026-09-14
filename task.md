@@ -54,15 +54,16 @@
 
 | 状态 | 任务 | 验收 | 备注 |
 |---|---|---|---|
-| [ ] | `schema.sql`：分层四表 + 迁移 | 建表/升级幂等；`messages`/`facts`/`ltm_entries`/`embeddings` 四表 + 索引 + 时间戳原则 | 表结构见 README §4.3（分层四表 + 向量分离） |
-| [ ] | 连接池 + 健康检查 | 池化连接；断连可重连；`SELECT 1` 健康检查 | |
-| [ ] | 扩展管理 | `pg_trgm`（主路径）+ `vector`（可选）按需 `CREATE EXTENSION` | 每个测试库需各自启用（§8.4） |
-| [ ] | `store.mjs` CRUD | add/get/update/soft-delete/restore/list；`content_hash` 精确去重 | 语义照搬 §16.1 |
-| [ ] | 关键词/元数据检索（trigram） | `content gin_trgm_ops` 索引生效；LIKE/ILIKE 命中 | 主路径（§3.5/D7） |
-| [ ] | `rerank.mjs` LLM 重排 | 候选记忆 → 按相关性重排 | 纯函数，可 mock LLM 测试 |
-| [ ] | 单元测试（PG 一次性实例） | store/segment/rerank 用例全绿 | L1/L2 层，不需 DSH（§8.2） |
+| [x] | `schema.sql`：分层四表 + 迁移 | 建表/升级幂等；`messages`/`facts`/`ltm_entries`/`embeddings` 四表 + 索引 + 时间戳原则 | ✅ 2026-09-14 17:09:56：`src/schema.ts`（EXTENSION_SQL + SCHEMA_SQL 幂等）；在 `my_pgvector`(5433) 实测建 4 表 |
+| [x] | 连接池 + 健康检查 | 池化连接；断连可重连；`SELECT 1` 健康检查 | ✅ 2026-09-14 17:09:56：`MemoryStore.connect`（pg.Pool + `options:'-c search_path=public'`）+ `health()` 分项 connect/pgvector/schema |
+| [x] | 扩展管理 | `pg_trgm`（主路径）+ `vector`（可选）按需 `CREATE EXTENSION` | ✅ 2026-09-14 17:09:56：`EXTENSION_SQL` 幂等 `CREATE EXTENSION IF NOT EXISTS` |
+| [x] | `store.mjs` CRUD | add/get/update/soft-delete/restore/list；`content_hash` 精确去重 | ✅ 2026-09-14 17:09:56：`src/store.ts` addFact(去重)/getFactById/softDeleteFact/restoreFact/supersedeFact/updateFact；8 用例过 |
+| [x] | 关键词/元数据检索（trigram） | `content gin_trgm_ops` 索引生效；LIKE/ILIKE 命中 | ✅ 2026-09-14 17:09:56：`searchFacts` 全表扫 + keywordScore（CJK 二元组感知）——⚠️ ILIKE 初筛对「content 带空格/查询不带」的中文命中差，改用扫描+打分（参考实现同构，§3.5 小规模够用）；trigram 索引保留 |
+| [x] | `rerank.mjs` LLM 重排 | 候选记忆 → 按相关性重排 | ✅ 2026-09-14 17:09:56：`src/rerank.ts` 纯函数 `rerankHits`（scorer 注入可 mock）+ `heuristicScore` 兜底；`searchAndRerank` 组合入口 |
+| [x] | 单元测试（PG 一次性实例） | store/segment/rerank 用例全绿 | ✅ 2026-09-14 17:09:56：16 用例全过（9 跑真实 PG 5433 + 7 纯逻辑）；typecheck 0；build 0 |
 
 **退出标准**：`store.mjs` CRUD + 关键词检索 + 重排均有测试覆盖；PG 一次性实例测试通过。
+→ ✅ 2026-09-14 17:09:56 **M2 完成**；测试报告见 `测试报告/m2.md`（待审批）。
 
 ---
 
@@ -142,8 +143,8 @@
 |---|---|---|
 | M0 | 技术验证（D4/D7/命令名/隔离实例） | ✅ 完成（2026-09-14；D4=路线A；D7 实证 M2 补齐） |
 | M1 | F-01–F-05（部分）、F-06 前置 | ✅ 代码完成 + 安装 + 测试实例启动（2026-09-14）；UI 实机验证待用户调试 |
-| M2 | F-01/F-02/F-06 | ⏳ 未开始（下一步） |
-| M3 | F-07–F-12 | ⏳ 未开始 |
+| M2 | F-01/F-02/F-06 | ✅ 完成（2026-09-14 17:09:56；测试报告 `测试报告/m2.md` 待审批） |
+| M3 | F-07–F-12 | ⏳ 待 M2 审批后启动（下一步） |
 | M4 | F-13/F-15 | ⏳ 未开始 |
 | M5 | F-05/F-14/F-16/F-17 | ⏳ 未开始 |
 | M6 | F-19 | ✗ 移除 |
