@@ -63,6 +63,32 @@ export interface SearchHit extends FactRecord {
   kwScore?: number | null
 }
 
+/** 一条原始消息（messages 行，目的3：审计与回溯）。 */
+export interface MessageInput {
+  workspaceId: string
+  sessionId: string
+  role: 'user' | 'assistant' | 'tool'
+  content: string
+  sourceSeq?: number | null
+  agentId?: string | null
+}
+
+export interface MessageRecord {
+  messageId: number
+  workspaceId: string
+  sessionId: string
+  role: string
+  content: string
+  sourceSeq: number | null
+  createdAt: string
+}
+
+/** 冲突检测用：已有事实的 (id, content)。 */
+export interface ExistingFact {
+  factId: number
+  content: string
+}
+
 /** 连接测试分项。 */
 export interface HealthStep {
   name: string
@@ -148,6 +174,57 @@ export class MemoryStore {
   /** 测试辅助：清空数据表（保留表结构），供单测隔离。 */
   async truncateAll(): Promise<void> {
     await this.poolOf().query('TRUNCATE messages, facts, ltm_entries, embeddings RESTART IDENTITY')
+  }
+
+  // ── messages 写入（目的3：原始日志层，审计与回溯） ────────────────
+
+  /** 写入一条原始消息（幂等：同一 (workspace, session, source_seq) 不重复）。 */
+  async addMessage(input: MessageInput): Promise<MessageRecord> {
+    const r = await this.poolOf().query<{ message_id: number }>(
+      `INSERT INTO messages (workspace_id, session_id, agent_id, role, content, source_seq, content_hash, created_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7, now())
+       ON CONFLICT DO NOTHING
+       RETURNING message_id`,
+      [
+        input.workspaceId,
+        input.sessionId,
+        input.agentId ?? null,
+        input.role,
+        input.content,
+        input.sourceSeq ?? null,
+        contentHashOf(input.content),
+      ],
+    )
+    if (r.rowCount && r.rowCount > 0) {
+      return this.getMessageById(Number(r.rows[0].message_id))
+    }
+    // 冲突（已存在）→ 读回已有行
+    const ex = await this.poolOf().query<{ message_id: number }>(
+      `SELECT message_id FROM messages WHERE workspace_id = $1 AND session_id = $2 AND content_hash = $3`,
+      [input.workspaceId, input.sessionId, contentHashOf(input.content)],
+    )
+    return this.getMessageById(Number(ex.rows[0]?.message_id ?? 0))
+  }
+
+  /** 按 id 读一条消息。 */
+  async getMessageById(id: number): Promise<MessageRecord> {
+    const r = await this.poolOf().query<MessageRow>(
+      `SELECT message_id, workspace_id, session_id, role, content, source_seq, created_at
+       FROM messages WHERE message_id = $1 AND deleted_at IS NULL`,
+      [id],
+    )
+    return r.rowCount ? rowToMessage(r.rows[0]) : { messageId: id, workspaceId: '', sessionId: '', role: '', content: '', sourceSeq: null, createdAt: '' }
+  }
+
+  // ── 冲突检测辅助 ────────────────────────────────────────────────
+
+  /** 列出某 workspace 有效事实的 (id, content)，供近似去重/冲突检测（segment.classifyDedup）。 */
+  async listExistingFacts(workspaceId: string): Promise<ExistingFact[]> {
+    const r = await this.poolOf().query<{ fact_id: number; content: string }>(
+      `SELECT fact_id, content FROM facts WHERE workspace_id = $1 AND deleted_at IS NULL AND status <> 'superseded'`,
+      [workspaceId],
+    )
+    return r.rows.map(row => ({ factId: Number(row.fact_id), content: String(row.content) }))
   }
 
   /** 健康检查：逐项（connect / pgvector / schema）。 */
@@ -386,8 +463,29 @@ interface FactRow {
   deleted_at: string | null
 }
 
-function rowToFact(row: FactRow): FactRecord {
+interface MessageRow {
+  message_id: number
+  workspace_id: string
+  session_id: string
+  role: string
+  content: string
+  source_seq: number | null
+  created_at: string
+}
+
+function rowToMessage(row: MessageRow): MessageRecord {
   return {
+    messageId: Number(row.message_id),
+    workspaceId: String(row.workspace_id),
+    sessionId: String(row.session_id),
+    role: String(row.role),
+    content: String(row.content),
+    sourceSeq: row.source_seq === null ? null : Number(row.source_seq),
+    createdAt: String(row.created_at),
+  }
+}
+
+function rowToFact(row: FactRow): FactRecord {  return {
     factId: Number(row.fact_id),
     workspaceId: String(row.workspace_id),
     sessionId: row.session_id ? String(row.session_id) : null,

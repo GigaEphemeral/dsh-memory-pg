@@ -16,6 +16,10 @@ import '@deepseek-ai/dsh-settings'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { SETTINGS_NS, type MemoryPgPrefs } from './prefs.ts'
 import { PrefsSchema } from './config.ts'
+import { MemoryStore, type DbConfig } from './store.ts'
+import { registerMemoryCommands, type CommandDeps } from './commands.ts'
+import type { LlmCaller } from './distill.ts'
+import { join } from 'node:path'
 
 /** 连接测试分项步骤结果。 */
 export interface TestStep {
@@ -178,5 +182,109 @@ export function apply(ctx: Context): void {
 
     // watch：设置提交后触发（M5 向量开关/工具门控在此扩展）。
     scope.watch(() => {})
+
+    // ── M3：五条 /memory-pg-* 命令接线 ────────────────────────────
+    // 依赖注入：store（连接来自 prefs）、distill caller（ctx.llm.stream）、
+    // context provider（session.deriveMessages）、sessionMeta（header.cwd）。
+    const store = new MemoryStore()
+    const connectFromPrefs = (p: MemoryPgPrefs): void => {
+      const cfg: DbConfig = { host: p.dbHost, port: p.dbPort, user: p.dbUser, password: p.dbPassword, database: p.dbName }
+      store.connect(cfg)
+      store.migrate().catch((error) => console.error('[memory-pg] migrate failed', error))
+    }
+    connectFromPrefs(scope.get())
+
+    // distill caller：包一层 ctx.llm.stream（D4 路线 A）。
+    // 前缀缓存复用（官方 compaction 设计）：messages = replay 前缀 + 指令尾，
+    // 让 provider 复用上轮请求的 KV cache；maxTokens + finish 分类 + 截断检测。
+    const llm = ctx.get('llm')
+    const DISTILL_MAX_TOKENS = 2000
+    const distillCaller: LlmCaller = async (messages) => {
+      if (llm === undefined) throw new Error('ctx.llm not mounted')
+      const providers = llm.listProviders()
+      const provider = providers[0]?.id
+      if (!provider) throw new Error('no llm provider registered')
+      let model = provider
+      try {
+        const models = await llm.listModels(provider)
+        if (models.length > 0) model = models[0].id
+      } catch {
+        // 保持 provider 占位
+      }
+      const chunks: string[] = []
+      let finish: 'stop' | 'max-tokens' | 'error' | 'aborted' = 'stop'
+      let error: string | undefined
+      const stream = llm.stream({
+        provider,
+        model,
+        messages: messages.map((m) => ({
+          role: m.role,
+          content: [{ type: 'text', text: m.content }],
+        })),
+        maxTokens: DISTILL_MAX_TOKENS,
+      } as never)
+      for await (const chunk of stream as AsyncIterable<{
+        type: string
+        text?: string
+        block?: { type: string; text?: string }
+        reason?: { kind: string; failure?: { message?: string } }
+      }>) {
+        if (chunk.type === 'text-delta' && typeof chunk.text === 'string') chunks.push(chunk.text)
+        else if (chunk.type === 'block-end' && chunk.block?.type === 'text' && typeof chunk.block.text === 'string') {
+          chunks.push(chunk.block.text)
+        } else if (chunk.type === 'finish' && chunk.reason) {
+          finish = chunk.reason.kind as typeof finish
+          if (chunk.reason.failure?.message) error = chunk.reason.failure.message
+        }
+      }
+      return { text: chunks.join(''), finish, error }
+    }
+
+    // context provider：读 agent 会话的 deriveMessages() 拼文本。
+    // 返回 { context, replayPrefix }：
+    // - replayPrefix = 全部最近消息（replay 到 messages 头部 → 前缀缓存复用，官方 compaction 同款）
+    // - context = 全部文本（distill 内分块，每块指令作最后 user 消息，前缀恒定 → 缓存命中）
+    const contextProvider = async (agent: { id: string }): Promise<{ context: string; replayPrefix: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> }> => {
+      const sessions = ctx.get('sessions') as { get: (id: string) => { deriveMessages: () => Array<{ role: string; content: Array<{ type: string; text?: string }> }> } | undefined } | undefined
+      const session = sessions?.get(agent.id)
+      if (!session) return { context: '', replayPrefix: [] }
+      const msgs = session.deriveMessages()
+      const textLines: string[] = []
+      const prefix: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = []
+      for (const m of msgs) {
+        const text = m.content.map(b => (b.type === 'text' ? b.text ?? '' : '')).filter(Boolean).join(' ')
+        if (!text.trim()) continue
+        const role = m.role === 'system' || m.role === 'assistant' || m.role === 'user' ? m.role : 'user'
+        textLines.push(`${role}: ${text}`)
+        prefix.push({ role, content: text })
+      }
+      // 上限保护：最多取最近 40 条（避免一次性喂太多）
+      const tail = textLines.slice(-40)
+      const prefixTail = prefix.slice(-40)
+      return { context: tail.join('\n'), replayPrefix: prefixTail }
+    }
+
+    // sessionMeta：从 header.cwd 推 workspaceId（取 cwd 最后一段；无则用 sessionId 兜底）。
+    const sessionMeta = async (agent: { id: string }): Promise<{ workspaceId: string; sessionId: string }> => {
+      const sessions = ctx.get('sessions') as { get: (id: string) => { header: { cwd?: string } } | undefined } | undefined
+      const session = sessions?.get(agent.id)
+      const cwd = session?.header.cwd
+      const workspaceId = cwd ? cwd.replace(/[\\/]+$/g, '').split(/[\\/]/).pop() ?? 'workspace' : 'workspace'
+      return { workspaceId, sessionId: agent.id }
+    }
+
+    const memoryDir = join(process.cwd(), '.memory-pg-files')
+    const deps: CommandDeps = {
+      store,
+      distillCaller,
+      contextProvider,
+      sessionMeta,
+      memoryDir,
+    }
+    const disposers = registerMemoryCommands(ctx, deps)
+    ctx.effect(() => () => {
+      for (const d of disposers) d()
+      void store.close()
+    }, 'dsh-memory-pg.commands')
   })
 }
