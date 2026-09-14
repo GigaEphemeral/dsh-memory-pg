@@ -412,28 +412,29 @@ export function apply(ctx: Context): void {
     }
     const disposers = registerMemoryCommands(ctx, deps)
 
-    // ── M4：memory_search 模型工具 ────────────────────────────────
-    // 复用 commands 的 workspace 解析能力；当前会话 workspaceId 取自 sessionMeta。
-    const toolRuntime = {
-      store,
-      resolveTarget: async (target: string) => {
-        const list = workspaceLister()
-        const resolved = resolveWorkspace(list, target)
-        return resolved?.kind === 'ok' ? resolved.workspace : null
-      },
-      workspaceIdOfAgent: async (agent?: { id: string }) => {
-        if (!agent) return 'workspace'
-        return (await sessionMeta(agent)).workspaceId
-      },
-      listWorkspaces: workspaceLister,
-    }
-    void registerMemoryTools(ctx, toolRuntime).then((disposer) => {
-      if (disposer) {
-        ctx.effect(() => disposer, 'dsh-memory-pg.tools')
-      }
-    }).catch((error) => {
-      console.error('[memory-pg] tools registration failed', error)
-    })
+    // ── M4：memory_search 模型工具（2026-09-14 用户指示：注释掉，不做） ──
+    // 原因：模型自动调用 memory_search 会产生误导（用户可能本意是联网搜索）；记忆检索
+    // 必须通过 /memory-pg-search 命令显式执行。工具注册代码保留，需要时取消注释即可。
+    // const toolRuntime = {
+    //   store,
+    //   resolveTarget: async (target: string) => {
+    //     const list = workspaceLister()
+    //     const resolved = resolveWorkspace(list, target)
+    //     return resolved?.kind === 'ok' ? resolved.workspace : null
+    //   },
+    //   workspaceIdOfAgent: async (agent?: { id: string }) => {
+    //     if (!agent) return 'workspace'
+    //     return (await sessionMeta(agent)).workspaceId
+    //   },
+    //   listWorkspaces: workspaceLister,
+    // }
+    // void registerMemoryTools(ctx, toolRuntime).then((disposer) => {
+    //   if (disposer) {
+    //     ctx.effect(() => disposer, 'dsh-memory-pg.tools')
+    //   }
+    // }).catch((error) => {
+    //   console.error('[memory-pg] tools registration failed', error)
+    // })
 
     ctx.effect(() => () => {
       for (const d of disposers) d()

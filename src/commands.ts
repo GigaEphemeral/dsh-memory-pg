@@ -129,17 +129,19 @@ async function resolveSearchTarget(
   return { ok: false, error: `未找到项目「${target}」${candidates}` }
 }
 
-/** 统一出口：结果文本 → （可选）写回对话框 + 返回命令结果。 */
+/**
+ * 统一出口：结果文本 → 命令卡片始终返回完整文本；
+ * appendAssistant（写回对话框）仅作附加增强，失败不影响卡片结果。
+ * （2026-09-14 修复：此前 append 启用时返回空 text，导致"结果没了 + 参数被吃掉"）
+ */
 async function finish(
   deps: CommandDeps,
   invocation: { agent: { id: string } },
   text: string,
   error = false,
 ): Promise<{ kind: 'success' | 'error'; text: string }> {
-  if (!error && deps.appendAssistant) {
+  if (!error && deps.appendAssistant && text) {
     await deps.appendAssistant(invocation.agent, text).catch(() => {})
-    // 写回对话框后仍返回一个简短确认（命令卡片本身仍需一个结果）
-    return { kind: 'success', text: '' }
   }
   return { kind: error ? 'error' : 'success', text }
 }
