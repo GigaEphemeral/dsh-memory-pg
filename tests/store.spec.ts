@@ -4,13 +4,14 @@ import { MemoryStore, contentHashOf, keywordScore, type DbConfig } from '../src/
 /**
  * 单测 PG：用 my_pgvector 容器（5433，无 AGE preload——54320 的 dsh_memory 容器
  * `shared_preload_libraries=age` 会让 TRUNCATE 报 ag_catalog 不存在，见开发经验 M2）。
- * 端口可用 DSH_TEST_PG_PORT 覆盖。
+ * 端口可用 DSH_TEST_PG_PORT 覆盖；密码经 DSH_TEST_PG_PASSWORD 环境变量提供
+ * （不在代码里硬编码；本地跑测试前 `$env:DSH_TEST_PG_PASSWORD='***'`）。
  */
 const DB: DbConfig = {
   host: process.env.DSH_TEST_PG_HOST ?? '127.0.0.1',
   port: Number(process.env.DSH_TEST_PG_PORT ?? 5433),
   user: 'postgres',
-  password: process.env.DSH_TEST_PG_PASSWORD ?? 'czq',
+  password: process.env.DSH_TEST_PG_PASSWORD ?? '',
   database: 'dsh_memory_pg_test',
 }
 
