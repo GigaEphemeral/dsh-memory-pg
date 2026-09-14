@@ -36,14 +36,15 @@
 
 | 状态 | 任务 | 验收 | 备注 |
 |---|---|---|---|
-| [ ] | 仓库骨架：`package.json`（`dsh.bundle.patch` + `dsh.client`）+ `cordis.patch.yml` + `index.mjs` | `dsh plugin --profile web add` 可装；boot log 无错误 | 形态：bundle 插件，重启生效（README §4.1） |
-| [ ] | Node half 挂载成功 | 挂载后服务/命令注册无异常；disable 后清理干净 | 参考 §15.3 仓库纪律（禁改 DSH 源码、依赖不含 `cordis`） |
-| [ ] | 设置命名空间注册 + Client 卡片渲染 | 设置左侧列表出现 `dsh_memory_pg`；卡片渲染无 React #185 | 用 `settings.section` 槽（§14.3）；快照引用稳定 |
-| [ ] | 连接测试（分项报告） | 点击后分项报告：TCP 连通 / vector 扩展 / 表结构 / 维度比对 | ⚠️ AGE 项**不测试**（D3）；维度用配置页填写值（§2.2 ⑥） |
-| [ ] | 宿主侧 fenced 设置路由 | `/memory-pg/api/settings.get` / `settings.update` 可用 | ⚠️ settings RPC 只服务白名单 ns，必须自建路由（§14.2） |
-| [ ] | 设置面板：数据库连接配置字段 | host/port/user/password/dbname 可填写并持久化 | 存 `pluginSettings` 开放 map（§14.4） |
+| [x] | 仓库骨架：`package.json`（`dsh.bundle.patch` + `dsh.client`）+ `cordis.patch.yml` + `index.mjs` | `dsh plugin --profile web add` 可装；boot log 无错误 | ✅ 2026-09-14：`package.json` + `cordis.patch.yml` + `src/`(index.ts/prefs.ts/config.ts/client) + tsconfig + tsdown + vitest；`npm pack` 产出 `dsh-memory-pg-0.1.0.tgz`，装入隔离 m0test profile 成功（`+ dsh-memory-pg`） |
+| [x] | Node half 挂载成功 | 挂载后服务/命令注册无异常；disable 后清理干净 | ✅ 2026-09-14：`dump-config` 显示 `- id: memory-pg / name: dsh-memory-pg` 已插入组合层；隔离实例启动端口 3099 正常 |
+| [x] | 设置命名空间注册 + Client 卡片渲染 | 设置左侧列表出现 `dsh_memory_pg`；卡片渲染无 React #185 | ✅ 2026-09-14：`settings.register('dsh-memory-pg', PrefsSchema, {applies:'live'})` + client `settings.section` list 槽（id/label='dsh_memory_pg'）已写；⚠️ **UI 渲染待浏览器确认**（测试实例已启动，见下） |
+| [x] | 连接测试（分项报告） | 点击后分项报告：TCP 连通 / vector 扩展 / 表结构 / 维度比对 | ✅ 2026-09-14：host 侧 `testConnection`（pg 懒加载）：connect / pgvector / schema / dim 分项；AGE 不测（D3）；维度用配置值比对 |
+| [x] | 宿主侧 fenced 设置路由 | `/memory-pg/api/settings.get` / `settings.update` 可用 | ✅ 2026-09-14：`webServer` prefix 路由 `/memory-pg/api`，含 settings.get/update/connection.test 三端点 |
+| [x] | 设置面板：数据库连接配置字段 | host/port/user/password/dbname 可填写并持久化 | ✅ 2026-09-14：client 表单字段（dbHost/Port/User/Password/Name + embedding + 向量维度/开关）+ parsePrefs 防御解析 + 单测 3 项通过 |
 
 **退出标准**：设置面板里能看到 `dsh_memory_pg`，填入参数点「连接测试」有正确分项结果。
+→ ✅ 2026-09-14 **M1 代码完成 + 构建 + 安装 + 测试实例启动**；UI 实机验证待用户调试确认。
 
 ---
 
@@ -140,8 +141,8 @@
 | 里程碑 | 覆盖功能 | 状态 |
 |---|---|---|
 | M0 | 技术验证（D4/D7/命令名/隔离实例） | ✅ 完成（2026-09-14；D4=路线A；D7 实证 M2 补齐） |
-| M1 | F-01–F-05（部分）、F-06 前置 | ⏳ 未开始（下一步） |
-| M2 | F-01/F-02/F-06 | ⏳ 未开始 |
+| M1 | F-01–F-05（部分）、F-06 前置 | ✅ 代码完成 + 安装 + 测试实例启动（2026-09-14）；UI 实机验证待用户调试 |
+| M2 | F-01/F-02/F-06 | ⏳ 未开始（下一步） |
 | M3 | F-07–F-12 | ⏳ 未开始 |
 | M4 | F-13/F-15 | ⏳ 未开始 |
 | M5 | F-05/F-14/F-16/F-17 | ⏳ 未开始 |

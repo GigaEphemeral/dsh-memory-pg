@@ -1,0 +1,5 @@
+# dsh-memory-pg bundle patch.
+# 安装后 profile boot 会把本插件行插入层栈（bundle 形态，重启生效）。
+- insert:
+    - id: memory-pg
+      name: 'dsh-memory-pg'
