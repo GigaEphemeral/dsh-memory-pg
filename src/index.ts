@@ -195,11 +195,10 @@ export function apply(ctx: Context): void {
     connectFromPrefs(scope.get())
 
     // distill caller：包一层 ctx.llm.stream（D4 路线 A）。
-    // 前缀缓存复用（官方 compaction 设计）：messages = replay 前缀 + 指令尾，
-    // 让 provider 复用上轮请求的 KV cache；maxTokens + finish 分类 + 截断检测。
+    // 不照搬官方 compaction 的前缀缓存/截断检测机制（D-M3-2）：我们的提炼是用户手动触发，
+    // 时机随机，前缀缓存收益不确定；保持简单 caller。
     const llm = ctx.get('llm')
-    const DISTILL_MAX_TOKENS = 2000
-    const distillCaller: LlmCaller = async (messages) => {
+    const distillCaller: LlmCaller = async (system, user) => {
       if (llm === undefined) throw new Error('ctx.llm not mounted')
       const providers = llm.listProviders()
       const provider = providers[0]?.id
@@ -212,56 +211,35 @@ export function apply(ctx: Context): void {
         // 保持 provider 占位
       }
       const chunks: string[] = []
-      let finish: 'stop' | 'max-tokens' | 'error' | 'aborted' = 'stop'
-      let error: string | undefined
       const stream = llm.stream({
         provider,
         model,
-        messages: messages.map((m) => ({
-          role: m.role,
-          content: [{ type: 'text', text: m.content }],
-        })),
-        maxTokens: DISTILL_MAX_TOKENS,
+        messages: [
+          { role: 'system', content: [{ type: 'text', text: system }] },
+          { role: 'user', content: [{ type: 'text', text: user }] },
+        ],
       } as never)
-      for await (const chunk of stream as AsyncIterable<{
-        type: string
-        text?: string
-        block?: { type: string; text?: string }
-        reason?: { kind: string; failure?: { message?: string } }
-      }>) {
+      for await (const chunk of stream as AsyncIterable<{ type: string; text?: string; block?: { type: string; text?: string } }>) {
         if (chunk.type === 'text-delta' && typeof chunk.text === 'string') chunks.push(chunk.text)
         else if (chunk.type === 'block-end' && chunk.block?.type === 'text' && typeof chunk.block.text === 'string') {
           chunks.push(chunk.block.text)
-        } else if (chunk.type === 'finish' && chunk.reason) {
-          finish = chunk.reason.kind as typeof finish
-          if (chunk.reason.failure?.message) error = chunk.reason.failure.message
         }
       }
-      return { text: chunks.join(''), finish, error }
+      return chunks.join('')
     }
 
     // context provider：读 agent 会话的 deriveMessages() 拼文本。
-    // 返回 { context, replayPrefix }：
-    // - replayPrefix = 全部最近消息（replay 到 messages 头部 → 前缀缓存复用，官方 compaction 同款）
-    // - context = 全部文本（distill 内分块，每块指令作最后 user 消息，前缀恒定 → 缓存命中）
-    const contextProvider = async (agent: { id: string }): Promise<{ context: string; replayPrefix: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> }> => {
+    const contextProvider = async (agent: { id: string }): Promise<string> => {
       const sessions = ctx.get('sessions') as { get: (id: string) => { deriveMessages: () => Array<{ role: string; content: Array<{ type: string; text?: string }> }> } | undefined } | undefined
       const session = sessions?.get(agent.id)
-      if (!session) return { context: '', replayPrefix: [] }
+      if (!session) return ''
       const msgs = session.deriveMessages()
-      const textLines: string[] = []
-      const prefix: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = []
+      const lines: string[] = []
       for (const m of msgs) {
         const text = m.content.map(b => (b.type === 'text' ? b.text ?? '' : '')).filter(Boolean).join(' ')
-        if (!text.trim()) continue
-        const role = m.role === 'system' || m.role === 'assistant' || m.role === 'user' ? m.role : 'user'
-        textLines.push(`${role}: ${text}`)
-        prefix.push({ role, content: text })
+        if (text.trim()) lines.push(`${m.role}: ${text}`)
       }
-      // 上限保护：最多取最近 40 条（避免一次性喂太多）
-      const tail = textLines.slice(-40)
-      const prefixTail = prefix.slice(-40)
-      return { context: tail.join('\n'), replayPrefix: prefixTail }
+      return lines.slice(-40).join('\n') // 最近 40 条
     }
 
     // sessionMeta：从 header.cwd 推 workspaceId（取 cwd 最后一段；无则用 sessionId 兜底）。

@@ -11,13 +11,11 @@ import type { Context } from '@deepseek-ai/cordis'
 import '@deepseek-ai/dsh-settings'
 import '@deepseek-ai/dsh-commands'
 import type { MemoryStore, FactRecord, SearchHit } from './store.ts'
-import { distill, type DistilledFact, type LlmCaller, type LlmMessage } from './distill.ts'
+import { distill, type DistilledFact, type LlmCaller } from './distill.ts'
 import { segmentFacts, classifyDedup, type SegmentedFact } from './segment.ts'
 
-/** 取当前会话上下文的提供者（index.ts 实现：读 session 事件流）。
- *  返回 { context, replayPrefix }：context 是待提炼文本（可含保留尾部处理），
- *  replayPrefix 是最近消息，replay 进 messages 头部以复用 provider KV cache。 */
-export type ContextProvider = (agent: { id: string }) => Promise<{ context: string; replayPrefix?: Array<Pick<LlmMessage, 'role' | 'content'>> }>
+/** 取当前会话上下文的提供者（index.ts 实现：读 session 事件流）。 */
+export type ContextProvider = (agent: { id: string }) => Promise<string>
 
 /** 会话上下文来源的片段（供回溯）。 */
 export interface CommandContext {
@@ -105,8 +103,8 @@ export function registerMemoryCommands(ctx: Context, deps: CommandDeps): Array<(
     handler: async (invocation) => {
       try {
         const meta = await deps.sessionMeta(invocation.agent)
-        const src = await deps.contextProvider(invocation.agent)
-        const facts = await distill({ context: src.context, replayPrefix: src.replayPrefix }, deps.distillCaller)
+        const context = await deps.contextProvider(invocation.agent)
+        const facts = await distill(context, deps.distillCaller)
         const res = await persistFacts(deps.store, meta.workspaceId, meta.sessionId, facts)
         return { kind: 'success', text: summaryText('save', facts, res) }
       } catch (error) {
@@ -123,8 +121,8 @@ export function registerMemoryCommands(ctx: Context, deps: CommandDeps): Array<(
     handler: async (invocation) => {
       try {
         const meta = await deps.sessionMeta(invocation.agent)
-        const src = await deps.contextProvider(invocation.agent)
-        const facts = await distill({ context: src.context, replayPrefix: src.replayPrefix }, deps.distillCaller)
+        const context = await deps.contextProvider(invocation.agent)
+        const facts = await distill(context, deps.distillCaller)
         const res = await persistFacts(deps.store, meta.workspaceId, meta.sessionId, facts)
         return { kind: 'success', text: summaryText('compact-save', facts, res) }
       } catch (error) {
@@ -141,8 +139,8 @@ export function registerMemoryCommands(ctx: Context, deps: CommandDeps): Array<(
     handler: async (invocation) => {
       try {
         const meta = await deps.sessionMeta(invocation.agent)
-        const src = await deps.contextProvider(invocation.agent)
-        const facts = await distill({ context: src.context, replayPrefix: src.replayPrefix }, deps.distillCaller)
+        const context = await deps.contextProvider(invocation.agent)
+        const facts = await distill(context, deps.distillCaller)
         // 生成 md 文件（不入库）
         const { writeFile, mkdir } = await import('node:fs/promises')
         const { join } = await import('node:path')

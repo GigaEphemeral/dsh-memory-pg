@@ -54,43 +54,18 @@ describe('splitContext', () => {
 
 describe('distill', () => {
   it('merges chunks and dedupes by norm key', async () => {
-    const caller = async (): Promise<{ text: string; finish: 'stop' }> =>
-      ({ text: '{"facts":[{"subject":"A","predicate":"是","object":"B"}]}', finish: 'stop' })
-    const facts = await distill({ context: 'some context' }, caller, { chunkChars: 1000, maxChunks: 3, maxFacts: 8 })
+    const caller = async (): Promise<string> =>
+      '{"facts":[{"subject":"A","predicate":"是","object":"B"}]}'
+    const facts = await distill('some context', caller, { chunkChars: 1000, maxChunks: 3, maxFacts: 8 })
     expect(facts).toHaveLength(1)
     expect(facts[0].subject).toBe('A')
   })
 
   it('respects maxFacts', async () => {
-    const caller = async (): Promise<{ text: string; finish: 'stop' }> =>
-      ({ text: '{"facts":[{"subject":"A","predicate":"p","object":"1"},{"subject":"B","predicate":"p","object":"2"}]}', finish: 'stop' })
-    const facts = await distill({ context: 'ctx' }, caller, { chunkChars: 1000, maxChunks: 2, maxFacts: 1 })
+    const caller = async (): Promise<string> =>
+      '{"facts":[{"subject":"A","predicate":"p","object":"1"},{"subject":"B","predicate":"p","object":"2"}]}'
+    const facts = await distill('ctx', caller, { chunkChars: 1000, maxChunks: 2, maxFacts: 1 })
     expect(facts).toHaveLength(1)
-  })
-
-  it('replays prefix before instruction for cache reuse', async () => {
-    let seen: unknown = null
-    const caller = async (messages: Array<{ role: string; content: string }>): Promise<{ text: string; finish: 'stop' }> => {
-      seen = messages.map(m => m.role)
-      return { text: '{"facts":[]}', finish: 'stop' }
-    }
-    await distill(
-      { context: 'ctx', replayPrefix: [{ role: 'user', content: '之前内容' }, { role: 'assistant', content: '答复' }] },
-      caller,
-    )
-    expect(seen).toEqual(['user', 'assistant', 'user'])
-  })
-
-  it('rejects truncated (max-tokens) output', async () => {
-    const caller = async (): Promise<{ text: string; finish: 'max-tokens' }> =>
-      ({ text: '{"facts":[{"subject":"A","predicate":"p","object":"1"}]}', finish: 'max-tokens' })
-    await expect(distill({ context: 'ctx' }, caller)).rejects.toThrow(/truncated/)
-  })
-
-  it('rejects error/aborted finish', async () => {
-    const caller = async (): Promise<{ text: string; finish: 'error'; error: string }> =>
-      ({ text: '', finish: 'error', error: 'boom' })
-    await expect(distill({ context: 'ctx' }, caller)).rejects.toThrow(/boom/)
   })
 })
 
@@ -100,5 +75,13 @@ describe('normKey / DISTILL_SYSTEM_PROMPT', () => {
   })
   it('prompt mentions facts JSON shape', () => {
     expect(DISTILL_SYSTEM_PROMPT).toContain('facts')
+  })
+  it('absorbs official compaction prompt discipline (D-M3-2)', () => {
+    // 吸纳官方：保留精确内容（路径/命令/错误串/标识符/数值）；忠实记录用户纠正/偏好
+    expect(DISTILL_SYSTEM_PROMPT).toContain('文件路径')
+    expect(DISTILL_SYSTEM_PROMPT).toContain('错误信息')
+    expect(DISTILL_SYSTEM_PROMPT).toContain('标识符')
+    expect(DISTILL_SYSTEM_PROMPT).toContain('忠实记录')
+    expect(DISTILL_SYSTEM_PROMPT).toContain('纠正')
   })
 })

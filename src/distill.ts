@@ -4,6 +4,11 @@
  * M3 落地 README §16.2（提炼 prompt 纪律 / 长上下文分块 / JSON 容错解析三级）。
  * 设计：distill 是**纯函数 + 可注入 LLM caller**——caller 由调用方注入（真实走 ctx.llm，
  * 测试注入 mock），使解析/分块/容错逻辑可独立单测。
+ *
+ * 与官方 dsh-compaction-basic 的关系（D-M3-2，docs/compaction-gap.md）：
+ * - 底座是我们的（三要素 JSON → facts 表，可检索/回溯）；
+ * - 只吸纳官方的 **prompt 纪律**（保留精确路径/命令/错误串/标识符/数值；忠实记录用户
+ *   纠正与偏好）；不照搬官方机制（前缀缓存复用 / 自动压力触发 / 8 节 checkpoint 结构）。
  */
 
 /** 一条提炼产出的事实（三要素 + 标签 + 合成 content）。 */
@@ -17,22 +22,8 @@ export interface DistilledFact {
   confidence: number | null
 }
 
-/** LLM 消息（prefix-cache 复用：replay 会话前缀 + 指令尾）。 */
-export interface LlmMessage {
-  role: 'system' | 'user' | 'assistant'
-  content: string
-}
-
-/** LLM 调用结果（含 finish 分类，供截断检测）。 */
-export interface LlmCallResult {
-  text: string
-  /** 完成原因：stop 正常 / max-tokens 截断（调用方应 fail-closed 拒绝残稿） */
-  finish: 'stop' | 'max-tokens' | 'error' | 'aborted'
-  error?: string
-}
-
-/** LLM 调用方：输入完整 messages（已含 replay 前缀 + 指令尾），返回原始文本 + finish。 */
-export type LlmCaller = (messages: LlmMessage[]) => Promise<LlmCallResult>
+/** LLM 调用方：输入提炼指令（system + user），返回原始文本。 */
+export type LlmCaller = (system: string, user: string) => Promise<string>
 
 /** 提炼配置（阈值参数，纯逻辑可测）。 */
 export interface DistillConfig {
@@ -50,13 +41,18 @@ export const DISTILL_DEFAULTS: DistillConfig = {
   maxFacts: 8,
 }
 
-/** 提炼系统 prompt（§16.2 纪律）：只提取跨会话价值内容，只输出 JSON。 */
+/**
+ * 提炼系统 prompt：以我们的三要素 JSON 为底座，吸纳官方 compaction-basic 的 prompt 纪律——
+ * 保留精确文件路径/命令/错误串/标识符/数值；忠实记录用户反馈与纠正；只输出 JSON。
+ */
 export const DISTILL_SYSTEM_PROMPT = [
   '你是长期记忆提炼器。从对话中只提取跨会话仍有价值的事实、用户偏好、约定、决定、环境约束。',
   '不要提取寒暄、过程细节、工具输出、临时文件路径。每条记忆必须是独立完整的中文陈述。',
+  '保留精确内容：文件路径、命令、错误信息、标识符、数值、函数签名、语法片段原样保留，不要改写。',
+  '忠实记录用户的反馈与明确指令，尤其是纠正和偏好，不要遗漏或美化。',
   '只输出一个 JSON 对象，格式：',
   '{"facts":[{"subject":"...","predicate":"...","object":"...","content":"完整陈述","tags":["标签"]}]}',
-  'content 是 subject+predicate+object 的完整句子；不要 Markdown、不要解释。',
+  'content 是 subject+predicate+object 的完整句子，用词要准确具体；不要 Markdown、不要解释。',
   '没有值得记的内容就输出 {"facts":[]}。',
 ].join(' ')
 
@@ -89,48 +85,30 @@ export function splitContext(text: string, config: DistillConfig = DISTILL_DEFAU
   return chunks.slice(0, Math.max(1, Number(config.maxChunks) || chunks.length))
 }
 
-/** 提炼输入：可选的会话前缀（replay 到 messages 前面以复用 provider KV cache）+ 待提炼上下文。 */
-export interface DistillInput {
-  /** 待提炼的上下文文本（分块后放进指令 user 消息）。 */
-  context: string
-  /** 可选：会话前缀（最近消息），replay 到 messages 开头 → 前缀缓存复用（官方 compaction 同款）。 */
-  replayPrefix?: Array<Pick<LlmMessage, 'role' | 'content'>>
-  /** 保留尾部条数：context 前段参与提炼，尾部 N 条原样保留（不提炼）——由调用方传入已切好的 context。 */
-}
-
 /**
  * 提炼：上下文 → 事实列表。
- * 分块后逐块调用 caller（messages = replayPrefix + 指令 user），合并 + 去重 + 截断 maxFacts。
- * 每块指令作为最后一条 user 消息 → 前缀缓存复用；finish=max-tokens → 抛错拒绝残稿。
+ * 分块后逐块调用 caller（system + user），合并 + 去重（归一化 content_hash 键）+ 截断 maxFacts。
+ * 不做前缀缓存复用 / finish 分类（那是官方 compaction 的机制，与本插件手动提炼目标无关，D-M3-2）。
  */
 export async function distill(
-  input: DistillInput,
+  context: string,
   caller: LlmCaller,
   config: DistillConfig = DISTILL_DEFAULTS,
 ): Promise<DistilledFact[]> {
-  const chunks = splitContext(input.context, config)
+  const chunks = splitContext(context, config)
   if (chunks.length === 0) return []
   const out: DistilledFact[] = []
   const seen = new Set<string>()
-  const prefix: LlmMessage[] = (input.replayPrefix ?? []).map(m => ({ role: m.role, content: m.content }))
   for (let i = 0; i < chunks.length; i += 1) {
-    const instruction = [
+    const user = [
       `以下是本次会话的第 ${i + 1}/${chunks.length} 段记录（只提取长期记忆）：`,
       '',
       chunks[i],
       '',
       '提取记忆：',
     ].join('\n')
-    // 前缀 + 指令尾：让 provider 复用上轮请求的 KV cache（官方 compaction 的缓存复用设计）。
-    const messages: LlmMessage[] = [...prefix, { role: 'user', content: instruction }]
-    const result = await caller(messages)
-    if (result.finish === 'max-tokens') {
-      throw new Error('distill truncated at token cap (incomplete facts rejected)')
-    }
-    if (result.finish === 'error' || result.finish === 'aborted') {
-      throw new Error(`distill failed: ${result.error ?? result.finish}`)
-    }
-    for (const fact of parseDistilledFacts(result.text)) {
+    const raw = await caller(DISTILL_SYSTEM_PROMPT, user)
+    for (const fact of parseDistilledFacts(raw)) {
       const key = normKey(`${fact.subject} ${fact.predicate} ${fact.object} ${fact.content}`)
       if (key.length < 4 || seen.has(key)) continue
       seen.add(key)
