@@ -102,6 +102,20 @@ export interface HealthResult {
   steps: HealthStep[]
 }
 
+/** 连接池状态：connected = 连接池已配置；paused = 用户暂停；disconnected = 未连接/已删除。 */
+export type StoreStatus = 'connected' | 'paused' | 'disconnected'
+
+/** 连接状态视图（脱敏，不含密码；target 只含 host:port/db）。 */
+export interface ConnectionStatusView {
+  status: StoreStatus
+  /** 最近一次真实存活检查是否成功；null = 尚未检查 */
+  reachable: boolean | null
+  /** 最近一次存活检查时间（ISO）；null = 尚未检查 */
+  lastPingAt: string | null
+  /** 连接目标 host:port/db；null = 未配置 */
+  target: string | null
+}
+
 /** 关键词打分：与参考实现 keywordScore 同构（CJK 二元组近似）。 */
 export function keywordScore(memoryText: string, query: string): number {
   const text = String(memoryText || '').toLowerCase()
@@ -129,6 +143,19 @@ export function contentHashOf(content: string): string {
 
 export class MemoryStore {
   private pool: Pool | null = null
+  /** 连接池状态（问题1：面板展示/暂停/删除用）。 */
+  private status_: StoreStatus = 'disconnected'
+  /** 连接目标脱敏描述 host:port/db（不含密码）。 */
+  private target_: string | null = null
+  /** 最近一次 ping 是否可达；null = 未 ping 过。 */
+  private reachable_: boolean | null = null
+  /** 最近一次 ping 时间（ISO）。 */
+  private lastPingAt_: string | null = null
+
+  /** 当前连接池状态。 */
+  get status(): StoreStatus {
+    return this.status_
+  }
 
   /** 建立连接池（懒：不立即 connect；首次查询时才连）。 */
   connect(config: DbConfig): void {
@@ -145,18 +172,83 @@ export class MemoryStore {
       // （README §2.2⑤ 的 AGE + 连接池已知坑）。
       options: '-c search_path=public',
     })
+    this.status_ = 'connected'
+    this.target_ = `${config.host}:${config.port}/${config.database}`
+    this.reachable_ = null
+    this.lastPingAt_ = null
   }
 
   private poolOf(): Pool {
-    if (this.pool === null) throw new Error('memory store: not connected; call connect(config) first')
+    if (this.pool === null) {
+      if (this.status_ === 'paused') throw new Error('memory store: 连接已暂停；请先在设置面板恢复')
+      throw new Error('memory store: 未连接；请先在设置面板连接')
+    }
     return this.pool
   }
 
-  /** 关闭连接池。 */
+  /** 关闭连接池（stop/update 生命周期回收）。 */
   async close(): Promise<void> {
     if (this.pool !== null) {
       await this.pool.end().catch(() => {})
       this.pool = null
+    }
+    this.status_ = 'disconnected'
+    this.reachable_ = null
+  }
+
+  /** 真实可达性探测：SELECT 1（超时 3s），更新 reachable_/lastPingAt_。 */
+  async ping(): Promise<boolean> {
+    this.lastPingAt_ = new Date().toISOString()
+    if (this.pool === null) {
+      this.reachable_ = false
+      return false
+    }
+    try {
+      await Promise.race([
+        this.pool.query('SELECT 1'),
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error('ping timeout')), 3000)),
+      ])
+      this.reachable_ = true
+      this.status_ = 'connected'
+      return true
+    } catch (error) {
+      this.reachable_ = false
+      return false
+    }
+  }
+
+  /** 暂停连接：断开连接池并标记 paused（保留配置，可恢复）。 */
+  async pause(): Promise<void> {
+    if (this.pool !== null) {
+      await this.pool.end().catch(() => {})
+      this.pool = null
+    }
+    this.status_ = 'paused'
+    this.reachable_ = false
+  }
+
+  /** 恢复连接：用给定配置重建连接池（pause 后调用）。 */
+  resume(config: DbConfig): void {
+    this.connect(config)
+  }
+
+  /** 删除连接：断开并置为 disconnected（配置仍保留，需手动重连）。 */
+  async disconnect(): Promise<void> {
+    if (this.pool !== null) {
+      await this.pool.end().catch(() => {})
+      this.pool = null
+    }
+    this.status_ = 'disconnected'
+    this.reachable_ = false
+  }
+
+  /** 脱敏连接状态视图（供面板/API 展示）。 */
+  statusView(): ConnectionStatusView {
+    return {
+      status: this.status_,
+      reachable: this.reachable_,
+      lastPingAt: this.lastPingAt_,
+      target: this.target_,
     }
   }
 

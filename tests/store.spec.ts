@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeAll, afterAll, beforeEach } from 'vitest'
+import { describe, expect, it, beforeAll, afterAll, beforeEach, afterEach } from 'vitest'
 import { MemoryStore, contentHashOf, keywordScore, type DbConfig } from '../src/store.ts'
 
 /**
@@ -82,6 +82,58 @@ describe('MemoryStore facts CRUD', () => {
     const oldAfter = await store.getFactById(old!.factId)
     expect(oldAfter!.status).toBe('superseded')
     expect(oldAfter!.supersededBy).toBe(next!.factId)
+  })
+})
+
+describe('MemoryStore connection lifecycle (问题1)', () => {
+  // 独立实例，避免 pause/disconnect 干扰共享 store 的 CRUD 用例。
+  let s: MemoryStore
+  beforeEach(() => {
+    s = new MemoryStore()
+  })
+  afterEach(async () => {
+    // 确保无论用例走到哪种状态都能收尾（close 幂等）。
+    await s.close().catch(() => {})
+  })
+
+  it('starts disconnected; connect marks connected + target', () => {
+    expect(s.status).toBe('disconnected')
+    s.connect(DB)
+    expect(s.status).toBe('connected')
+    const v = s.statusView()
+    expect(v.target).toContain(`${DB.host}:${DB.port}`)
+    expect(v.reachable).toBeNull()
+  })
+
+  it('pause then resume cycles status', () => {
+    s.connect(DB)
+    return s.pause().then(() => {
+      expect(s.status).toBe('paused')
+      expect(s.statusView().reachable).toBe(false)
+      // paused 状态下 pool 不存在 → 查询抛"已暂停"
+      return expect(s.searchFacts('ws-test', 'x')).rejects.toThrow(/暂停/)
+    }).then(() => {
+      s.resume(DB)
+      expect(s.status).toBe('connected')
+    })
+  })
+
+  it('disconnect clears to disconnected; poolOf throws 未连接', async () => {
+    s.connect(DB)
+    await s.disconnect()
+    expect(s.status).toBe('disconnected')
+    await expect(s.searchFacts('ws-test', 'x')).rejects.toThrow(/未连接/)
+  })
+
+  it('ping reflects reachability against real PG', async () => {
+    s.connect(DB)
+    expect(await s.ping()).toBe(true)
+    const v = s.statusView()
+    expect(v.reachable).toBe(true)
+    expect(v.lastPingAt).not.toBeNull()
+    // 未连接时 ping → false
+    await s.disconnect()
+    expect(await s.ping()).toBe(false)
   })
 })
 

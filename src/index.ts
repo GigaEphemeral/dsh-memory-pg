@@ -125,6 +125,21 @@ export function apply(ctx: Context): void {
       return steps
     }
 
+    // ── store：连接池（连接来自 prefs；路由/命令共用） ─────────────
+    const store = new MemoryStore()
+    const dbConfigOf = (p: MemoryPgPrefs): DbConfig => ({
+      host: p.dbHost,
+      port: p.dbPort,
+      user: p.dbUser,
+      password: p.dbPassword,
+      database: p.dbName,
+    })
+    const connectFromPrefs = (p: MemoryPgPrefs): void => {
+      store.connect(dbConfigOf(p))
+      store.migrate().catch((error) => console.error('[memory-pg] migrate failed', error))
+    }
+    connectFromPrefs(scope.get())
+
     // settings.get / settings.update：客户端经此 fenced 路由读写（settings RPC
     // 只服务白名单 ns，见 README §14.2）。
     ctx.get('webServer')?.register({
@@ -174,9 +189,46 @@ export function apply(ctx: Context): void {
           }
           return
         }
+        // ── 连接状态：查看/暂停/恢复/删除（问题1） ────────────────
+        if (url.pathname.endsWith('/connection.status') && req.method === 'GET') {
+          const view = store.statusView()
+          res.statusCode = 200
+          res.setHeader('content-type', 'application/json')
+          res.end(JSON.stringify({ ok: true, view }))
+          return
+        }
+        if (url.pathname.endsWith('/connection.ping') && req.method === 'POST') {
+          const reachable = await store.ping()
+          res.statusCode = 200
+          res.setHeader('content-type', 'application/json')
+          res.end(JSON.stringify({ ok: true, reachable, view: store.statusView() }))
+          return
+        }
+        if (url.pathname.endsWith('/connection.pause') && req.method === 'POST') {
+          await store.pause()
+          res.statusCode = 200
+          res.setHeader('content-type', 'application/json')
+          res.end(JSON.stringify({ ok: true, view: store.statusView() }))
+          return
+        }
+        if (url.pathname.endsWith('/connection.resume') && req.method === 'POST') {
+          store.resume(dbConfigOf(scope.get()))
+          res.statusCode = 200
+          res.setHeader('content-type', 'application/json')
+          res.end(JSON.stringify({ ok: true, view: store.statusView() }))
+          return
+        }
+        if (url.pathname.endsWith('/connection.delete') && req.method === 'POST') {
+          await store.disconnect()
+          res.statusCode = 200
+          res.setHeader('content-type', 'application/json')
+          res.end(JSON.stringify({ ok: true, view: store.statusView() }))
+          return
+        }
         res.statusCode = 404
         res.setHeader('content-type', 'application/json')
         res.end(JSON.stringify({ ok: false, error: 'not found' }))
+        return
       },
     })
 
@@ -184,15 +236,9 @@ export function apply(ctx: Context): void {
     scope.watch(() => {})
 
     // ── M3：五条 /memory-pg-* 命令接线 ────────────────────────────
-    // 依赖注入：store（连接来自 prefs）、distill caller（ctx.llm.stream）、
+    // 依赖注入：store（上方已连接）、distill caller（ctx.llm.stream）、
     // context provider（session.deriveMessages）、sessionMeta（header.cwd）。
-    const store = new MemoryStore()
-    const connectFromPrefs = (p: MemoryPgPrefs): void => {
-      const cfg: DbConfig = { host: p.dbHost, port: p.dbPort, user: p.dbUser, password: p.dbPassword, database: p.dbName }
-      store.connect(cfg)
-      store.migrate().catch((error) => console.error('[memory-pg] migrate failed', error))
-    }
-    connectFromPrefs(scope.get())
+    // store 已在路由段 connectFromPrefs(scope.get()) 建立并 migrate。
 
     // distill caller：包一层 ctx.llm.stream（D4 路线 A）。
     // 不照搬官方 compaction 的前缀缓存/截断检测机制（D-M3-2）：我们的提炼是用户手动触发，
