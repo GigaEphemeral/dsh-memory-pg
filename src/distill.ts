@@ -102,11 +102,11 @@ export async function distill(
   const seen = new Set<string>()
   for (let i = 0; i < chunks.length; i += 1) {
     const user = [
-      `以下是本次会话的第 ${i + 1}/${chunks.length} 段记录（只提取长期记忆）：`,
+      `请总结上面的对话内容（第 ${i + 1}/${chunks.length} 段），提取值得跨会话长期保存的记忆：`,
       '',
       chunks[i],
       '',
-      '提取记忆：',
+      '总结上面内容：',
     ].join('\n')
     const raw = await caller(DISTILL_SYSTEM_PROMPT, user)
     for (const fact of parseDistilledFacts(raw)) {
