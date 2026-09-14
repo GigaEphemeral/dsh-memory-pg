@@ -327,11 +327,14 @@ export function apply(ctx: Context): void {
       const msgs = session.deriveMessages()
       const lines: string[] = []
       for (const m of msgs) {
+        // 过滤 system 角色（系统提示词/工具规则/agent 预设）——这些不是会话语义内容，
+        // 喂给提炼 LLM 会被当成"约定/偏好"提取（2026-09-14 实测提炼出 8 条工具规则）。
+        if (m.role === 'system') continue
         const text = m.content.map(b => (b.type === 'text' ? b.text ?? '' : '')).filter(Boolean).join(' ')
         if (text.trim()) lines.push(`${m.role}: ${text}`)
       }
       const out = lines.slice(-40).join('\n')
-      console.error(`[memory-pg][diag] contextProvider: agent=${agent.id} derived=${msgs.length} textLines=${lines.length} chars=${out.length}`)
+      console.error(`[memory-pg][diag] contextProvider: agent=${agent.id} derived=${msgs.length} nonSystem=${lines.length} chars=${out.length}`)
       return out
     }
 
