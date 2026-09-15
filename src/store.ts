@@ -177,6 +177,12 @@ export class MemoryStore {
       // （README §2.2⑤ 的 AGE + 连接池已知坑）。
       options: '-c search_path=public',
     })
+    // P0 修复（2026-09-15）：DB 断连/空闲连接出错时 Pool 会 emit 'error'，无监听器时 Node
+    // 直接抛未捕获异常 → 进程崩溃。这里必须监听，只记录不抛出——数据库不可用绝不能影响 DSH
+    // 启动与运行（migrate 失败的 catch 在调用方 index.ts 处理，回滚为 disconnected）。
+    this.pool.on('error', (error: Error) => {
+      console.error(`[memory-pg] pool error (不影响 DSH 运行): ${error instanceof Error ? error.message : String(error)}`)
+    })
     this.status_ = 'connected'
     this.target_ = `${config.host}:${config.port}/${config.database}`
     this.reachable_ = null

@@ -136,6 +136,26 @@ describe('MemoryStore connection lifecycle (问题1)', () => {
     await s.disconnect()
     expect(await s.ping()).toBe(false)
   })
+
+  it('P0: migrate rejects on unreachable DB without crashing; disconnect rolls back to disconnected', async () => {
+    // 模拟「保存了 DB 配置但数据库未启动」：连一个肯定连不上的端口。
+    // migrate 必须 reject（可被调用方 catch，绝不抛未捕获异常/进程崩溃），
+    // 随后 disconnect() 应把状态回滚为 disconnected（调用方 index.ts 失败回滚路径）。
+    s.connect({ ...DB, port: 65432, database: 'no_such_db' })
+    expect(s.status).toBe('connected') // connect 只配置池，不立即建连
+    await expect(s.migrate()).rejects.toBeTruthy() // 不可达 → reject 而非崩溃
+    await s.disconnect()
+    expect(s.status).toBe('disconnected')
+    await expect(s.searchFacts('ws-test', 'x')).rejects.toThrow(/未连接/)
+  })
+
+  it('P0: connect with invalid config must not throw synchronously (index.ts wraps it)', () => {
+    // store.connect 对非法配置（如 port 为 NaN）不应同步抛——调用方 connectFromPrefs
+    // 有整体 try/catch，但 store 层构造池本身也要稳（否则冒泡到 apply() 阻断插件加载）。
+    const s2 = new MemoryStore()
+    expect(() => s2.connect({ ...DB, port: Number.NaN })).not.toThrow()
+    s2.close()
+  })
 })
 
 describe('MemoryStore keyword search', () => {

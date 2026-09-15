@@ -141,22 +141,46 @@ export function apply(ctx: Context): void {
     const isDbConfigured = (p: MemoryPgPrefs): boolean =>
       Boolean(p.dbHost && p.dbUser && p.dbPassword && p.dbName)
     /**
+     * 错误折叠为一行摘要（migrate 失败等只记录一行，不打印整段 AggregateError 堆栈）。
+     * pg 连接失败常见 AggregateError（含 ETIMEDOUT / ECONNREFUSED 子错误），折叠首个子错误即可。
+     */
+    const errorSummary = (error: unknown): string => {
+      if (error instanceof AggregateError && error.errors.length > 0) {
+        const sub = error.errors.map(e => (e instanceof Error ? e.message : String(e))).filter(Boolean)
+        return `${error.message} (${sub.join(' | ')})`
+      }
+      return error instanceof Error ? error.message : String(error)
+    }
+    /**
      * 按最新 prefs 建立/重建连接（统一入口：启动 + 设置 watch 共用）。
      * - 未配置（dbPassword 等为空）→ 不连接，保持 disconnected（等用户在设置面板配置）。
      * - 已连接且目标相同 → 不动（避免 embedding 等非 DB 设置变更时无谓重建）。
      * - 已连接但 DB 目标变了 → 重建（store.connect 内部回收旧池）。
+     * - P0 修复（2026-09-15）：整体 try/catch——任何同步/异步异常只记录，绝不冒泡到 apply()
+     *   （否则 plugin tree failed to load 阻断 DSH 启动）；DB 不可达时 migrate 失败回滚为
+     *   disconnected（丢弃坏池），不影响 DSH 启动与其余功能。
      */
     const connectFromPrefs = (p: MemoryPgPrefs): void => {
-      if (!isDbConfigured(p)) {
-        if (store.status !== 'disconnected') void store.disconnect()
-        return
+      try {
+        if (!isDbConfigured(p)) {
+          if (store.status !== 'disconnected') void store.disconnect()
+          return
+        }
+        const cfg = dbConfigOf(p)
+        const current = store.statusView()
+        const target = `${cfg.host}:${cfg.port}/${cfg.database}`
+        if (current.status === 'connected' && current.target === target) return
+        store.connect(cfg)
+        store.migrate().catch((error) => {
+          console.error(`[memory-pg] 数据库连接/迁移失败（不影响 DSH 启动，可在设置面板重试）: ${errorSummary(error)}`)
+          // 回滚：丢弃坏池并置 disconnected，避免后续命令拿到连接超时错误、状态显示假 connected。
+          void store.disconnect().catch(() => {})
+        })
+      } catch (error) {
+        // 同步路径（如 pg.Pool 构造/配置非法）也不得冒泡到 apply()。
+        console.error(`[memory-pg] 连接配置异常（不影响 DSH 启动）: ${errorSummary(error)}`)
+        void store.disconnect().catch(() => {})
       }
-      const cfg = dbConfigOf(p)
-      const current = store.statusView()
-      const target = `${cfg.host}:${cfg.port}/${cfg.database}`
-      if (current.status === 'connected' && current.target === target) return
-      store.connect(cfg)
-      store.migrate().catch((error) => console.error('[memory-pg] migrate failed', error))
     }
     connectFromPrefs(scope.get())
 
