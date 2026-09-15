@@ -21,7 +21,7 @@ function seedVector(text: string): number[] {
   return [...normalizeVector(raw)]
 }
 
-const requests: Array<{ model?: unknown; input?: unknown; auth?: string }> = []
+const requests: Array<{ model?: unknown; input?: unknown; auth?: string; path?: string }> = []
 
 let server: Server
 let baseUrl = ''
@@ -31,7 +31,7 @@ beforeAll(async () => {
     let body = ''
     req.on('data', chunk => { body += String(chunk) })
     req.on('end', () => {
-      requests.push({ model: undefined, input: undefined, auth: req.headers.authorization })
+      requests.push({ model: undefined, input: undefined, auth: req.headers.authorization, path: req.url })
       try {
         const payload = JSON.parse(body)
         requests[requests.length - 1].model = payload.model
@@ -50,7 +50,8 @@ beforeAll(async () => {
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
   const addr = server.address()
   if (addr === null || typeof addr === 'string') throw new Error('no port')
-  baseUrl = `http://127.0.0.1:${addr.port}`
+  // 完整端点 URL（含 /v1/embeddings 路径）——客户端不补路径，直接请求该 URL。
+  baseUrl = `http://127.0.0.1:${addr.port}/v1/embeddings`
 })
 
 afterAll(async () => {
@@ -66,8 +67,9 @@ describe('EmbeddingClient', () => {
     // 归一化：模 ≈ 1
     const norm = Math.sqrt([...v].reduce((s, x) => s + x * x, 0))
     expect(norm).toBeCloseTo(1, 5)
-    // 请求格式：POST /embeddings { model, input }
+    // 请求格式：POST 完整端点 URL（客户端不补路径）{ model, input }
     expect(requests).toHaveLength(1)
+    expect(requests[0].path).toBe('/v1/embeddings')
     expect(requests[0].model).toBe('bge-m3')
     expect(requests[0].input).toEqual(['用户偏好简洁回复'])
   })

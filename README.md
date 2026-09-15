@@ -73,6 +73,27 @@ dsh plugin --profile web add @gigaephemeral/dsh-memory-pg@latest
 
 装完**重启 DSH web**（bundle 插件 host half 生效，非 HMR），然后**硬刷新浏览器**（Cmd/Ctrl+Shift+R）。
 
+> 🗄️ **安装后还差一步：准备 PostgreSQL 数据库（必须手动完成）**
+>
+> 插件**不会自动创建数据库和表结构**（当前版本）。你需要先用 psql / pgAdmin / Docker 建好一个
+> **空的数据库**，插件首次连接时会自动建表（`migrate` 幂等创建 `messages`/`facts`/`ltm_entries`/
+> `embeddings` 四表 + `pg_trgm` 扩展），但**数据库本身和必要扩展**需要你准备：
+>
+> ```sql
+> -- 1. 创建数据库（示例库名 dsh_memory_pg）
+> CREATE DATABASE dsh_memory_pg;
+>
+> -- 2. 连入该库后启用扩展（插件迁移也会执行，重复执行无副作用）
+> CREATE EXTENSION IF NOT EXISTS pg_trgm;   -- 关键词检索主路径（必须）
+> CREATE EXTENSION IF NOT EXISTS vector;    -- 仅开启向量检索时需要（可选）
+> ```
+>
+> 然后在设置面板填入该库的连接信息并点「测试数据库连接」，确认 connect / pgvector / schema 分项通过。
+> **未创建数据库时连接测试会失败**（`database "dsh_memory_pg" does not exist`），属正常预期。
+>
+> 📌 **未来规划**：提供「自动创建新数据库」能力——在设置面板输入目标库名后由插件代建库并迁移，
+> 当前版本尚未实现（见 `doc/阶段一task.md` Future backlog）。
+
 **方式二：让 DSH 自己装**——把下面这段提示词发给任意一个 DSH 会话：
 
 ```text
@@ -111,6 +132,7 @@ dsh plugin --profile web add @gigaephemeral/dsh-memory-pg@latest
 | 报「找不到 profile 目录」 | 先跑一次 `dsh web` 让它初始化 `~/.dsh/profiles/web` |
 | 装完命令/设置面板不出现 | bundle 插件 host half 需**重启 DSH web**（非 HMR），再硬刷新浏览器 |
 | 「测试数据库连接」失败 | 检查 PostgreSQL 是否运行、端口/账号/密码是否正确、库内是否已启用 `pg_trgm`（`CREATE EXTENSION IF NOT EXISTS pg_trgm;`） |
+| 报 `database "xxx" does not exist` | 插件**不会自动建库**，需先手动创建数据库（见安装章节「安装后还差一步」）；连接测试失败属预期，建库后重试 |
 | 搜索不到记忆 | 记忆按会话 cwd 目录名隔离：确认当前项目名 = 保存记忆时的目录名；跨项目检索用 `-p <项目名>`（见下文） |
 
 </details>

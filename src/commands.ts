@@ -108,24 +108,33 @@ async function persistFacts(
     })
     if (rec !== null) added.push(rec)
   }
-  // M5（F-14）：向量启用时，对新增事实批量写入 embeddings（逐个 embed + 入库；
+  // M5（F-14）：向量启用时，对新增事实并发写入 embeddings（分组并发 embed + 入库；
   // 单个失败不阻断入库——向量是增强项，失败时命令结果注明）。
+  // 并发化原因：embedding 是串行瓶颈（每条 Ollama 请求 1-3 秒），逐条 await 会拉长命令总时长
+  // 触发前端命令超时 abort（2026-09-15 实测：后端已入库但前端显示 "This operation was aborted"）。
+  // 分组并发：Ollama 默认并发有限，一次打太多条会排队/超时；每批 CONCURRENCY 条并行。
   let vectors = 0
   if (vector?.enabled && added.length > 0) {
-    for (const rec of added) {
-      try {
-        const v = await vector.embed(rec.content)
-        await store.addFactEmbedding({
-          factId: rec.factId,
-          workspaceId,
-          content: rec.content,
-          vector: v,
-          model: vector.model,
-        })
-        vectors += 1
-      } catch (error) {
-        console.error(`[memory-pg] vector write failed for fact#${rec.factId}: ${error instanceof Error ? error.message : String(error)}`)
-      }
+    const CONCURRENCY = 4
+    for (let i = 0; i < added.length; i += CONCURRENCY) {
+      const batch = added.slice(i, i + CONCURRENCY)
+      const results = await Promise.all(batch.map(async (rec) => {
+        try {
+          const v = await vector.embed(rec.content)
+          await store.addFactEmbedding({
+            factId: rec.factId,
+            workspaceId,
+            content: rec.content,
+            vector: v,
+            model: vector.model,
+          })
+          return true
+        } catch (error) {
+          console.error(`[memory-pg] vector write failed for fact#${rec.factId}: ${error instanceof Error ? error.message : String(error)}`)
+          return false
+        }
+      }))
+      vectors += results.filter(Boolean).length
     }
   }
   return { added, duplicates, conflicts, vectors }

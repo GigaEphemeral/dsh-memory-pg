@@ -260,7 +260,9 @@ function MemoryPgSettingsPanel(): React.ReactElement {
       : null,
     React.createElement('hr', null),
     // ── 向量配置 ──
-    field('Embedding Base URL', 'embeddingBaseUrl'),
+    field('Embedding 端点 URL', 'embeddingBaseUrl'),
+    React.createElement('div', { style: { marginLeft: 8, marginTop: -4, color: '#57606a', fontSize: 12 } },
+      '完整端点 URL（客户端不补路径），如 http://localhost:11434/v1/embeddings（Ollama）'),
     field('Embedding Model', 'embeddingModel'),
     field('向量维度', 'vectorDim', 'number'),
     React.createElement('label', { style: labelStyle },

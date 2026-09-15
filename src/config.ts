@@ -28,7 +28,7 @@ export const PrefsSchema: z<MemoryPgPrefs> = z.object({
   dbUser: z.string().default('postgres'),
   dbPassword: z.string().default(''),
   dbName: z.string().default('dsh_memory_pg'),
-  embeddingBaseUrl: z.string().default('http://localhost:11434'),
+  embeddingBaseUrl: z.string().default('http://localhost:11434/v1/embeddings'),
   embeddingModel: z.string().default('bge-m3'),
   vectorDim: z.number().step(1).min(VECTOR_DIM_MIN).max(VECTOR_DIM_MAX).default(1024),
   vectorEnabled: z.boolean().default(false),

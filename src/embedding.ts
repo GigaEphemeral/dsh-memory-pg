@@ -1,11 +1,14 @@
 /**
  * dsh-memory-pg embedding 客户端（F-14，M5）。
  *
- * OpenAI 兼容 /embeddings 端点（Ollama 可用）：POST {baseUrl}/embeddings
- * { model, input } → { data: [{ embedding: number[] }] }。
+ * OpenAI 兼容 /embeddings 端点：POST 用户配置的**完整端点 URL**（如
+ * http://localhost:11434/v1/embeddings，Ollama 可用）{ model, input }
+ * → { data: [{ embedding: number[] }] }。
  *
  * 设计：
  * - 纯 HTTP 客户端，不依赖 DSH 运行时（host 侧真实 npm bundle 有全局 fetch）。
+ * - **客户端不做任何路径拼接/补全**——用户必须在设置面板填完整端点 URL
+ *   （含 /v1 等前缀，如 http://localhost:11434/v1/embeddings），配置页有提示。
  * - 维度校验（README §2.2⑥ 第 5 点）：返回向量维度必须 == 配置 vectorDim，
  *   否则显式报错（换 embedding 模型导致维度不匹配时写入静默失败的坑）。
  * - 向量归一化（cosine 相似度对归一化向量 = 点积），与参考实现 normalizeVector 同构。
@@ -16,7 +19,7 @@
 
 /** embedding 客户端配置。 */
 export interface EmbeddingConfig {
-  /** OpenAI 兼容端点根 URL（如 http://localhost:11434） */
+  /** OpenAI 兼容 **完整 embeddings 端点 URL**（如 http://localhost:11434/v1/embeddings） */
   baseUrl: string
   /** 模型名（如 bge-m3） */
   model: string
@@ -56,6 +59,8 @@ export class EmbeddingClient {
   private readonly apiKey: string | undefined
 
   constructor(config: EmbeddingConfig) {
+    // baseUrl 即**完整 embeddings 端点 URL**（如 http://localhost:11434/v1/embeddings）——
+    // 客户端不做任何路径拼接/补全，用户必须填完整端点（设置面板有提示）。
     this.baseUrl = String(config.baseUrl ?? '').trim().replace(/\/+$/, '')
     this.model = String(config.model ?? '').trim()
     this.dim = Math.round(Number(config.dim) || 0)
@@ -90,14 +95,14 @@ export class EmbeddingClient {
     return out
   }
 
-  /** 单批 POST {baseUrl}/embeddings。 */
+  /** 单批 POST 完整端点 baseUrl（用户配置的完整 URL，客户端不拼后缀）。 */
   private async postBatch(batch: string[]): Promise<number[][]> {
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(new EmbeddingError('embedding request timeout')), this.timeoutMs)
     try {
       let response: Response
       try {
-        response = await fetch(`${this.baseUrl}/embeddings`, {
+        response = await fetch(this.baseUrl, {
           method: 'POST',
           headers: {
             'content-type': 'application/json',

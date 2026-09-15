@@ -138,15 +138,35 @@
 
 ## M5 — 打磨（P1）
 
+> **完成时间**：2026-09-15（用户实测确认：向量保存 + 向量查询均可用，查询结果正确）
+> **当前不足**：提炼记忆质量是主要瓶颈——distill 依赖 LLM 一次命令的提炼能力，事实粒度和覆盖率受上下文长度/模型限制，且命令耗时较长（LLM 提炼 + 分组并发 embedding，实测曾触发前端命令超时显示 aborted，后端仍完整入库）。未来优化方向：提炼 prompt 增强、会话分轮提炼、上下文增量提炼。
+
 | 状态 | 任务 | 验收 | 备注 |
 |---|---|---|---|
-| [x] | 设置面板：embedding URL 配置（Ollama 兼容，可选） | URL 配置 + 保存；默认关 | F-05；字段 M1 已建（embeddingBaseUrl/Model/vectorDim/vectorEnabled），M5 接线 `vectorRuntime` 读取生效 |
-| [x] | 可选向量：embedding 客户端 + 维度校验 + 向量检索 + RRF 合并 | 开关开启才写入/查询；维度与库比对；RRF `1/(k+rank)` k=60 | F-14；默认关（D7）；§16.3；✅ 75/75 单测 + typecheck/build 全绿 |
+| [x] | 设置面板：embedding URL 配置（Ollama 兼容，可选） | URL 配置 + 保存；默认关 | F-05；字段 M1 已建（embeddingBaseUrl/Model/vectorDim/vectorEnabled），M5 接线 `vectorRuntime` 读取生效；**注意：embedding URL 须填完整端点（含 /v1，如 `http://localhost:11434/v1/embeddings`），客户端不自动补路径** |
+| [x] | 可选向量：embedding 客户端 + 维度校验 + 向量检索 + RRF 合并 | 开关开启才写入/查询；维度与库比对；RRF `1/(k+rank)` k=60 | F-14；默认关（D7）；§16.3；✅ 75/75 单测 + typecheck/build 全绿 + 用户实测可用（2026-09-15） |
 | [x]→📋 | 记忆文件管理（compact 产物） | ~~列表/打开/删除生成的 md 文件~~ → **已迁 Future**（2026-09-14 用户指示） | F-16 关联 |
 | [x]→📋 | 记忆管理：列表/编辑/软删除 | ~~命令或 UI 查看/编辑/软删/恢复~~ → **已迁 Future**（2026-09-14 用户指示） | F-16 |
 | [x]→📋 | 上下文压力触发的自动注入 | ~~挂 `agent/pre-step` + `ctx.compaction` 压力读；注入预算裁剪~~ → **已迁 Future**（2026-09-14 用户指示） | F-17；D1（v1 已做显式，此为 v1.5/v2 项） |
 
-**退出标准**：P1 项完成即可（不影响 v1 P0 交付）。
+### M5 核心逻辑：向量检索 + RRF 合并（F-14）
+
+**写入侧**（`/memory-pg-save` 等命令，启用向量时）：
+提炼出的事实先入 `facts` 表（结构化正文），再对**新增事实**用 embedding 客户端（Ollama 兼容，完整端点 URL）批量向量化，写入 `embeddings` 表（`ref_table='facts'` + `ref_id` 绑定，正文与向量分离）。维度必须等于配置 `vectorDim`（与库中 `vector(1024)` 列一致，不匹配显式报错）。分组并发（每组 4 条）缩短命令耗时；单个失败不阻断入库。
+
+**查询侧**（`/memory-pg-search`，启用向量时走 `searchHybrid`）：
+```
+关键词检索（searchFacts，CJK 二元组打分，取 limit×3 候选）
+                              ↓ 双来源
+向量检索（searchFactsVector，查询文本 embed → embeddings 表 cosine 相似度，取 limit×3 候选）
+                              ↓ RRF 合并（src/rrf.ts）
+rrfScore(d) = Σ_sources 1/(k + rank_s(d))   （k = 60）
+                              ↓
+按 rrfScore 降序取前 limit 条返回（match='rrf'）
+```
+要点：RRF 用**排序位次**而非原始分数合并——关键词与向量两套打分尺度不可比，位次天然归一；双来源都命中的记忆（`sources=2`）得分更高，兼顾精确召回（关键词）与语义复述召回（向量）。embedding 端点不可用时自动降级为纯关键词结果（远端故障不影响本地检索）。
+
+**退出标准**：P1 项完成即可（不影响 v1 P0 交付）。→ ✅ 2026-09-15 M5 完成
 
 ---
 
@@ -171,6 +191,7 @@
 | — | **workspace 重命名导致记忆查询失效的防护** | 2026-09-14 用户指示列入 Future：M4 用 cwd 目录名做 workspaceId，用户重命名项目目录后旧记忆仍挂在旧目录名下 → 需要方案（如 workspace 别名表 / 目录名→稳定 id 映射 / 迁移命令），触发条件：出现真实重命名场景 |
 | — | **记忆文件管理（compact 产物）** | 2026-09-14 用户指示迁入 Future（原 M5 项，F-16 关联）：列表/打开/删除生成的 md 文件 |
 | — | **记忆管理：列表/编辑/软删除** | 2026-09-14 用户指示迁入 Future（原 M5 项，F-16）：命令或 UI 查看/编辑/软删/恢复 |
+| — | **自动创建数据库** | 2026-09-15 用户提出（README 安装章节注明）：插件当前不自动建库，需用户手动 `CREATE DATABASE` + 扩展；未来在设置面板输入目标库名后由插件代建库并迁移（注意：建库需连 `postgres` 库执行 `CREATE DATABASE`，与常规连接不同） |
 | — | embedding 突变点分割 | §3.2 方案 D：v1 不做（对结构化事实是过度设计），留给无结构文本场景 |
 | — | 多用户/多租户权限、多人协作、独立 Web 管理后台 | §1 非目标（YAGNI） |
 

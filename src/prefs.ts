@@ -22,7 +22,7 @@ export interface MemoryPgPrefs {
     ok: boolean
     steps: Array<{ name: string; ok: boolean; detail?: string }>
   }
-  /** embedding（可选，默认关）：OpenAI 兼容 URL，如 Ollama */
+  /** embedding（可选，默认关）：OpenAI 兼容**完整端点 URL**（含 /v1 前缀，如 Ollama） */
   embeddingBaseUrl: string
   /** embedding 模型名，默认 bge-m3 */
   embeddingModel: string
@@ -39,7 +39,7 @@ export const MEMORY_PG_PREFS_DEFAULTS: MemoryPgPrefs = {
   dbUser: 'postgres',
   dbPassword: '',
   dbName: 'dsh_memory_pg',
-  embeddingBaseUrl: 'http://localhost:11434',
+  embeddingBaseUrl: 'http://localhost:11434/v1/embeddings',
   embeddingModel: 'bge-m3',
   vectorDim: 1024,
   vectorEnabled: false,
