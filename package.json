@@ -20,6 +20,7 @@
   "files": [
     "lib",
     "src",
+    "sql",
     "cordis.patch.yml",
     "README.md"
   ],

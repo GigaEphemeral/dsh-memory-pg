@@ -80,13 +80,18 @@ dsh plugin --profile web add @gigaephemeral/dsh-memory-pg@latest
 > `embeddings` 四表 + `pg_trgm` 扩展），但**数据库本身和必要扩展**需要你准备：
 >
 > ```sql
-> -- 1. 创建数据库（示例库名 dsh_memory_pg）
+> -- 创建数据库（示例库名 dsh_memory_pg；连 postgres 库执行）
 > CREATE DATABASE dsh_memory_pg;
->
-> -- 2. 连入该库后启用扩展（插件迁移也会执行，重复执行无副作用）
-> CREATE EXTENSION IF NOT EXISTS pg_trgm;   -- 关键词检索主路径（必须）
-> CREATE EXTENSION IF NOT EXISTS vector;    -- 仅开启向量检索时需要（可选）
 > ```
+>
+> 然后**连入该库**执行全量建表 SQL（扩展 + 四表 + 索引，幂等可重复执行）：
+>
+> ```bash
+> psql -U postgres -d dsh_memory_pg -f sql/schema.sql
+> ```
+>
+> 📄 **全量 SQL 见 [`sql/schema.sql`](sql/schema.sql)**——建库 + 建扩展 + 分层四表 DDL + 索引一应俱全
+> （与插件运行时代码 `src/schema.ts` 完全一致；也可以不手动建表，让插件首次连接自动 `migrate`，二者等价）。
 >
 > 然后在设置面板填入该库的连接信息并点「测试数据库连接」，确认 connect / pgvector / schema 分项通过。
 > **未创建数据库时连接测试会失败**（`database "dsh_memory_pg" does not exist`），属正常预期。
