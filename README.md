@@ -286,10 +286,85 @@ persist（写入 facts，按 workspace_id 隔离）
 **连接管理**：`MemoryStore` 维护连接池状态（connected/paused/disconnected），支持真实可达性探测
 （SELECT 1）、暂停/恢复/删除连接（`/memory-pg/api/connection.*`）。
 
-**向量检索（M5 F-14）**：`EmbeddingClient`（`src/embedding.ts`）走 OpenAI 兼容 `/embeddings` 端点
+### 核心逻辑一：distill 提炼（`src/distill.ts`）
+
+把会话上下文 → 结构化事实 JSON 列表。**只输出 JSON，不做叙事**——每条事实是独立完整的原子陈述。
+
+```
+会话上下文（最近 40 条，已过滤 system 消息）
+   │
+   ▼ splitContext：按段落打包，每块 ≤1000 字符，超长段落硬切，最多 6 块
+   │
+   ▼ 逐块调用 LLM（DISTILL_SYSTEM_PROMPT + 该块文本）
+   │    三要素 JSON 输出：{"facts":[{"subject","predicate","object","content","tags"}]}
+   │    prompt 纪律：保留精确路径/命令/错误串/标识符/数值；忠实记录用户纠正与偏好；
+   │    不提取工具规则/系统提示词/agent 预设（平台固定内容不是本会话记忆）
+   │
+   ▼ parseDistilledFacts：JSON 容错解析三级
+   │    ① 整段 JSON 解析 → ② 剥 ```json 代码块 → ③ 提取第一个平衡大括号对象
+   │
+   ▼ 合并 + 去重（normKey：去空白/标点/小写）+ 截断 maxFacts=8
+```
+
+关键设计：**让 LLM 在提炼时直接产出原子事实**（而非先写长文档再切）——语义单元天然正确，
+绕开大部分分割算法问题（§3.1 方案 A）。硬编码参数集中在 `DISTILL_DEFAULTS`
+（chunkChars=1000 / maxChunks=6 / maxFacts=8），未来参数化。
+
+### 核心逻辑二：segment 分割去重（`src/segment.ts`）
+
+把提炼出的事实 → 最终入库单元（解决碎片化与重复）。纯函数，可独立单测。
+
+```
+facts（distill 产物）
+   │
+   ▼ segmentFacts：分割 + 精确去重
+   │    - 过长（>600 字符）：递归字符分割，降级 \n\n → \n → 句号 → 分号 → 空格 → 硬切（保持语义完整）
+   │    - 过短（<20 字符）：与相邻同类合并（避免碎片污染检索）
+   │    - 每条产 content_hash（精确去重键，normKey 归一化）
+   │
+   ▼ classifyDedup：与已有事实近似比对（默认 jaccardSimilarity：字符二元组 Jaccard）
+   │    相似度 ≥ 0.92（dedupScore）→ duplicate：跳过
+   │    0.86 ≤ 相似度 < 0.92（conflictScore）→ conflict：标记待确认（不静默覆盖）
+   │    其余 → new：入库
+```
+
+关键设计：**精确去重靠 content_hash 唯一索引**（`uq_facts_ws_hash`），**近似去重/冲突靠相似度阈值**
+——阈值 0.92/0.86 来自参考实现 `dsh-local-vector-memory` 验证过的初值（§3.4）；开向量后可由调用方
+把 similarity 换成 embedding 余弦（D-M3-1，当前仍用 Jaccard 近似）。
+
+### 查询逻辑（两种模式）
+
+`/memory-pg-search [-p <项目>] <查询词>` 的检索路径**取决于设置面板的向量开关**：
+
+**模式一：向量关（默认，零 embedding 依赖）**
+
+```
+searchFacts：全表扫 workspace 内有效事实 → keywordScore 关键词打分（CJK 二元组感知，
+             中文空格/分词鲁棒）→ 按分数降序取前 limit 条（默认 20）
+   │
+   ▼ searchAndRerank：可选 LLM 重排（scorer 注入；无 LLM 时 heuristicScore 兜底：
+       关键词分 + 标签命中加权 + 重要性微加权）
+```
+
+**模式二：向量开（M5 F-14，混合检索）**
+
+```
+searchHybrid：
+   ├─ 关键词源：searchFacts（取 limit×3 候选，打分排序）
+   ├─ 向量源：查询文本 embed → searchFactsVector（embeddings 表 cosine 相似度，取 limit×3 候选）
+   │
+   ▼ RRF 合并（src/rrf.ts）：rrfScore = Σ 1/(k+rank)，k=60
+   │    用排序位次而非原始分数——两套打分尺度不可比，位次天然归一
+   │    双来源都命中的记忆得分更高（sources=2）
+   ▼ 按 rrfScore 降序取前 limit 条返回（match='rrf'）
+```
+
+**降级**：向量开启但 embedding 端点不可用（Ollama 没起/超时）→ `searchHybrid` 自动降级为
+纯关键词结果（远端故障不影响本地检索，R3）。
+
+**向量检索（M5 F-14）补充**：`EmbeddingClient`（`src/embedding.ts`）走 OpenAI 兼容 `/embeddings` 端点
 （Ollama 可用），返回维度必须等于配置 `vectorDim`（`assertDim` 显式报错，§2.2⑥）；向量写入
-`embeddings` 表（内容-向量分离，换模型只重算向量）；检索用 `searchHybrid`：关键词（limit×3）+
-向量（limit×3）双来源，`rrfScore = Σ 1/(k+rank)`（k=60）合并，双来源命中优先。
+`embeddings` 表（内容-向量分离，换模型只重算向量）。
 
 ## 📚 详细文档
 
