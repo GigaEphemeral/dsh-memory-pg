@@ -16,40 +16,9 @@
  */
 import React from 'react'
 import { SETTINGS_NS, MEMORY_PG_PREFS_DEFAULTS, parsePrefs, type MemoryPgPrefs } from '../prefs.ts'
+import { TOKEN, inputStyle, buttonStyle, cardStyle, rowStyle, labelStyle } from './theme.ts'
 
 const ROUTE = '/memory-pg/api'
-
-/** 统一圆角（问题3，样式层）。 */
-const ROUND = 8
-/** 统一控件/卡片样式（内联，轻量）。 */
-const inputStyle: React.CSSProperties = {
-  marginLeft: 8,
-  padding: '4px 10px',
-  borderRadius: ROUND,
-  border: '1px solid #d0d7de',
-  fontSize: 13,
-}
-const buttonStyle: React.CSSProperties = {
-  padding: '5px 14px',
-  borderRadius: ROUND,
-  border: '1px solid #d0d7de',
-  background: '#f6f8fa',
-  cursor: 'pointer',
-  fontSize: 13,
-}
-const cardStyle: React.CSSProperties = {
-  border: '1px solid #d0d7de',
-  borderRadius: ROUND,
-  padding: '10px 12px',
-  marginTop: 12,
-}
-const rowStyle: React.CSSProperties = {
-  display: 'flex',
-  gap: 8,
-  marginTop: 8,
-  flexWrap: 'wrap',
-}
-const labelStyle: React.CSSProperties = { display: 'block', marginBottom: 8 }
 
 /** 连接状态视图（host 侧 /connection.status 返回）。 */
 interface ConnectionView {
@@ -73,13 +42,13 @@ async function apiPost<T>(path: string, body: unknown): Promise<T> {
   return (await res.json()) as T
 }
 
-/** 状态徽标文案（中文）。 */
+/** 状态徽标文案（中文；颜色走主题令牌）。 */
 function statusLabel(view: ConnectionView): { text: string; color: string } {
-  if (view.status === 'paused') return { text: '⏸ 已暂停', color: '#9a6700' }
-  if (view.status === 'disconnected') return { text: '⚪ 未连接', color: '#57606a' }
-  if (view.reachable === true) return { text: '🟢 已连接（可达）', color: '#1a7f37' }
-  if (view.reachable === false) return { text: '🔴 已连接（不可达/已断开）', color: '#cf222e' }
-  return { text: '🟡 已连接（未探测）', color: '#9a6700' }
+  if (view.status === 'paused') return { text: '⏸ 已暂停', color: TOKEN.warn }
+  if (view.status === 'disconnected') return { text: '⚪ 未连接', color: TOKEN.labelSecondary }
+  if (view.reachable === true) return { text: '🟢 已连接（可达）', color: TOKEN.success }
+  if (view.reachable === false) return { text: '🔴 已连接（不可达/已断开）', color: TOKEN.error }
+  return { text: '🟡 已连接（未探测）', color: TOKEN.warn }
 }
 
 /** 连接状态卡片：查看 / 暂停 / 恢复 / 删除连接（问题1）。 */
@@ -120,11 +89,11 @@ function ConnectionCard(): React.ReactElement {
     React.createElement('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between' } },
       React.createElement('strong', null, '数据库连接'),
       label === null
-        ? React.createElement('span', { style: { color: '#57606a' } }, '检测中…')
+        ? React.createElement('span', { style: { color: TOKEN.labelSecondary } }, '检测中…')
         : React.createElement('span', { style: { color: label.color, fontWeight: 600 } }, label.text),
     ),
     view !== null && view.target !== null
-      ? React.createElement('div', { style: { marginTop: 6, color: '#57606a', fontSize: 12 } },
+      ? React.createElement('div', { style: { marginTop: 6, color: TOKEN.labelSecondary, fontSize: 12 } },
           `目标：${view.target}`,
           view.lastPingAt !== null ? `　｜　上次探测：${new Date(view.lastPingAt).toLocaleString()}` : '',
         )
@@ -151,7 +120,7 @@ function ConnectionCard(): React.ReactElement {
         title: isDisconnected ? '已无连接可删除' : '断开并删除当前连接（配置保留）',
       }, '删除连接'),
     ),
-    React.createElement('div', { style: { marginTop: 6, color: '#57606a', fontSize: 12 } },
+    React.createElement('div', { style: { marginTop: 6, color: TOKEN.labelSecondary, fontSize: 12 } },
       '「测试数据库连接」是只读分项检测；「暂停/恢复/删除」管理实际连接池。'),
   )
 }
@@ -235,7 +204,7 @@ function MemoryPgSettingsPanel(): React.ReactElement {
   if (!loaded) {
     return React.createElement('div', null,
       React.createElement('h3', null, '向量记忆配置'),
-      React.createElement('div', { style: { color: '#57606a' } }, '读取配置中…'))
+      React.createElement('div', { style: { color: TOKEN.labelSecondary } }, '读取配置中…'))
   }
 
   return React.createElement('div', null,
@@ -261,7 +230,7 @@ function MemoryPgSettingsPanel(): React.ReactElement {
     React.createElement('hr', null),
     // ── 向量配置 ──
     field('Embedding 端点 URL', 'embeddingBaseUrl'),
-    React.createElement('div', { style: { marginLeft: 8, marginTop: -4, color: '#57606a', fontSize: 12 } },
+    React.createElement('div', { style: { marginLeft: 8, marginTop: -4, color: TOKEN.labelSecondary, fontSize: 12 } },
       '完整端点 URL（客户端不补路径），如 http://localhost:11434/v1/embeddings（Ollama）'),
     field('Embedding Model', 'embeddingModel'),
     field('向量维度', 'vectorDim', 'number'),
@@ -275,7 +244,7 @@ function MemoryPgSettingsPanel(): React.ReactElement {
     ),
     React.createElement('div', { style: rowStyle },
       React.createElement('button', { style: buttonStyle, onClick: save }, '保存'),
-      saveStatus !== '' ? React.createElement('span', { style: { color: '#1a7f37', fontSize: 12 } }, saveStatus) : null,
+      saveStatus !== '' ? React.createElement('span', { style: { color: TOKEN.success, fontSize: 12 } }, saveStatus) : null,
     ),
     React.createElement(ConnectionCard),
   )
