@@ -137,8 +137,25 @@ export function apply(ctx: Context): void {
       password: p.dbPassword,
       database: p.dbName,
     })
+    /** 配置完整性守卫：DB 关键字段齐备才算"已配置"（缺密码等不算，避免空配 SCRAM 报错）。 */
+    const isDbConfigured = (p: MemoryPgPrefs): boolean =>
+      Boolean(p.dbHost && p.dbUser && p.dbPassword && p.dbName)
+    /**
+     * 按最新 prefs 建立/重建连接（统一入口：启动 + 设置 watch 共用）。
+     * - 未配置（dbPassword 等为空）→ 不连接，保持 disconnected（等用户在设置面板配置）。
+     * - 已连接且目标相同 → 不动（避免 embedding 等非 DB 设置变更时无谓重建）。
+     * - 已连接但 DB 目标变了 → 重建（store.connect 内部回收旧池）。
+     */
     const connectFromPrefs = (p: MemoryPgPrefs): void => {
-      store.connect(dbConfigOf(p))
+      if (!isDbConfigured(p)) {
+        if (store.status !== 'disconnected') void store.disconnect()
+        return
+      }
+      const cfg = dbConfigOf(p)
+      const current = store.statusView()
+      const target = `${cfg.host}:${cfg.port}/${cfg.database}`
+      if (current.status === 'connected' && current.target === target) return
+      store.connect(cfg)
       store.migrate().catch((error) => console.error('[memory-pg] migrate failed', error))
     }
     connectFromPrefs(scope.get())
@@ -215,7 +232,8 @@ export function apply(ctx: Context): void {
           return
         }
         if (url.pathname.endsWith('/connection.resume') && req.method === 'POST') {
-          store.resume(dbConfigOf(scope.get()))
+          // 复用统一入口：未配置（密码空）→ 不连接；已配置 → 重建（同目标不重复）。
+          connectFromPrefs(scope.get())
           res.statusCode = 200
           res.setHeader('content-type', 'application/json')
           res.end(JSON.stringify({ ok: true, view: store.statusView() }))
@@ -268,20 +286,10 @@ export function apply(ctx: Context): void {
       }
     }
 
-    // watch：设置提交后触发（M5 向量开关/工具门控在此扩展；连接变更可在此重连）。
+    // watch：设置提交后触发——统一走 connectFromPrefs（未配置不连；同目标不重建；
+    // DB 目标变化重建；用户保存配置后此处建立连接）。
     scope.watch(() => {
-      // 连接参数变更时重建连接池（保持与最新 prefs 一致）。
-      const prefs = scope.get()
-      const cfg = dbConfigOf(prefs)
-      const current = store.statusView()
-      if (current.status === 'connected') {
-        try {
-          store.connect(cfg)
-          store.migrate().catch((error) => console.error('[memory-pg] migrate failed', error))
-        } catch (error) {
-          console.error(`[memory-pg] reconnect failed: ${error instanceof Error ? error.message : String(error)}`)
-        }
-      }
+      connectFromPrefs(scope.get())
     })
 
     // ── M3：五条 /memory-pg-* 命令接线 ────────────────────────────

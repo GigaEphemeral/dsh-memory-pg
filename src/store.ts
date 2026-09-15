@@ -158,8 +158,12 @@ export class MemoryStore {
     return this.status_
   }
 
-  /** 建立连接池（懒：不立即 connect；首次查询时才连）。 */
+  /** 建立连接池（懒：不立即 connect；首次查询时才连）。换配置时回收旧池。 */
   connect(config: DbConfig): void {
+    if (this.pool !== null) {
+      // 换配置重建：回收旧池（fire-and-forget；新池独立对象，旧池 end 完成即可）。
+      void this.pool.end().catch(() => {})
+    }
     this.pool = new pg.Pool({
       host: config.host,
       port: config.port,
