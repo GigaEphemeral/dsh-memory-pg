@@ -165,3 +165,86 @@ describe('MemoryStore keyword search', () => {
     expect(hits[0].content).toContain('详情')
   })
 })
+
+describe('MemoryStore vector (M5 F-14)', () => {
+  // 库中 embeddings.embedding 列是 VECTOR(1024)（schema.ts），测试向量必须同维
+  // （§2.2⑥ 维度一致性：PG 会对维度不匹配显式报 expected 1024 dimensions）。
+  const VEC_DIM = 1024
+
+  /** 确定性语义向量：每个字符一个固定随机方向，文本向量 = 字符方向之和再归一化。
+   *  共享字符越多余弦越高（近似"语义相关"），同文本恒同向量。 */
+  const charDir = new Map<string, number[]>()
+  function vecOf(text: string): number[] {
+    const sum = new Array<number>(VEC_DIM).fill(0)
+    for (const ch of String(text)) {
+      let dir = charDir.get(ch)
+      if (dir === undefined) {
+        let seed = [...ch].reduce((s, c) => (s * 31 + (c.codePointAt(0) ?? 0)) >>> 0, 7)
+        dir = new Array<number>(VEC_DIM)
+        for (let i = 0; i < VEC_DIM; i += 1) {
+          seed = (seed * 1103515245 + 12345) >>> 0
+          dir[i] = (seed % 1000) / 1000 - 0.5
+        }
+        charDir.set(ch, dir)
+      }
+      for (let i = 0; i < VEC_DIM; i += 1) sum[i] += dir[i]
+    }
+    const norm = Math.sqrt(sum.reduce((s, x) => s + x * x, 0))
+    return norm === 0 ? sum : sum.map(x => x / norm)
+  }
+
+  it('addFactEmbedding stores + searchFactsVector finds by cosine', async () => {
+    await store.addFact({ workspaceId: 'ws-vec', subject: '登录', predicate: '报错', object: '密码错误' })
+    await store.addFact({ workspaceId: 'ws-vec', subject: '数据库', predicate: '连接', object: '超时' })
+    const list = await store.listFacts('ws-vec')
+    const login = list.find(f => f.content.includes('登录'))
+    const db = list.find(f => f.content.includes('数据库'))
+    expect(login).not.toBeUndefined()
+    expect(db).not.toBeUndefined()
+    await store.addFactEmbedding({ factId: login!.factId, workspaceId: 'ws-vec', content: login!.content, vector: vecOf('登录 报错 密码'), model: 'fake' })
+    await store.addFactEmbedding({ factId: db!.factId, workspaceId: 'ws-vec', content: db!.content, vector: vecOf('数据库 连接 超时'), model: 'fake' })
+
+    // 查询「密码错误」向量 → 登录条应排前（字符方向向量：与登录条共享「密码/登录」字符，
+    // 余弦显著高于只共享「错误」的数据库条；不断言绝对分数，断言相对排序）。
+    const hits = await store.searchFactsVector('ws-vec', vecOf('密码 错误 登录'))
+    expect(hits.length).toBeGreaterThan(0)
+    expect(hits[0].match).toBe('vector')
+    expect(hits[0].content).toContain('登录')
+    expect(hits[0].score).toBeGreaterThan(0) // 共享字符 → 正余弦
+  })
+
+  it('searchHybrid merges keyword + vector via RRF; match=rrf', async () => {
+    await store.addFact({ workspaceId: 'ws-hy', subject: '环境', predicate: '是', object: 'win11' })
+    await store.addFact({ workspaceId: 'ws-hy', subject: '语言', predicate: '用', object: 'typescript' })
+    const list = await store.listFacts('ws-hy')
+    for (const f of list) {
+      await store.addFactEmbedding({ factId: f.factId, workspaceId: 'ws-hy', content: f.content, vector: vecOf(f.content), model: 'fake' })
+    }
+    const hits = await store.searchHybrid('ws-hy', '环境', {
+      embedQuery: async q => vecOf(q),
+      limit: 5,
+      model: 'fake',
+    })
+    expect(hits.length).toBeGreaterThan(0)
+    expect(hits[0].match).toBe('rrf')
+    expect(hits[0].content).toContain('环境')
+  })
+
+  it('searchHybrid degrades to keyword-only when embedQuery throws', async () => {
+    await store.addFact({ workspaceId: 'ws-hy-fail', subject: '登录', predicate: '报错', object: '超时' })
+    const hits = await store.searchHybrid('ws-hy-fail', '登录', {
+      embedQuery: async () => { throw new Error('embedding down') },
+      limit: 5,
+    })
+    expect(hits.length).toBe(1)
+    expect(hits[0].content).toContain('登录')
+  })
+
+  it('removeFactEmbedding deletes by ref', async () => {
+    const fact = await store.addFact({ workspaceId: 'ws-delvec', subject: 'A', predicate: '关于', object: 'B' })
+    await store.addFactEmbedding({ factId: fact!.factId, workspaceId: 'ws-delvec', content: fact!.content, vector: vecOf('AB'), model: 'fake' })
+    expect((await store.searchFactsVector('ws-delvec', vecOf('AB'))).length).toBe(1)
+    await store.removeFactEmbedding(fact!.factId)
+    expect((await store.searchFactsVector('ws-delvec', vecOf('AB'))).length).toBe(0)
+  })
+})

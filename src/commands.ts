@@ -38,6 +38,16 @@ export type WorkspaceLister = () => Promise<readonly WorkspaceView[]>
 /** 把一段文本写回会话对话框（session.append assistant/message）。 */
 export type AppendAssistant = (agent: { id: string }, text: string) => Promise<void>
 
+/**
+ * M5（F-14）可选向量配置：由 index.ts 注入（vectorEnabled 时启用）。
+ * embed：单条文本 → 归一化向量（真实走 EmbeddingClient；测试注入 fake）。
+ */
+export interface VectorRuntime {
+  enabled: boolean
+  model: string
+  embed: (text: string) => Promise<ArrayLike<number>>
+}
+
 /** 命令依赖集合。 */
 export interface CommandDeps {
   store: MemoryStore
@@ -56,6 +66,16 @@ export interface CommandDeps {
   appendAssistant: AppendAssistant | null
   /** 记忆文件目录（compact 生成 md 用；index.ts 从配置读） */
   memoryDir: string
+  /**
+   * M5（F-14）：可选向量运行时提供者。每次命令执行时调用，读取最新设置
+   * （vectorEnabled/embedding URL 保存后立即生效，无需重启）；缺省 = 不启用向量。
+   */
+  vectorProvider?: () => VectorRuntime | null
+}
+
+/** 取当前向量运行时（无提供者/未启用 → null）。 */
+function vectorOf(deps: CommandDeps): VectorRuntime | null {
+  return deps.vectorProvider?.() ?? null
 }
 
 /** 解析 LLM 返回的三要素事实 → 入库。 */
@@ -64,7 +84,8 @@ async function persistFacts(
   workspaceId: string,
   sessionId: string,
   facts: DistilledFact[],
-): Promise<{ added: FactRecord[]; duplicates: number; conflicts: SegmentedFact[] }> {
+  vector: VectorRuntime | null | undefined = null,
+): Promise<{ added: FactRecord[]; duplicates: number; conflicts: SegmentedFact[]; vectors: number }> {
   const segmented = segmentFacts(facts)
   const existing = await store.listExistingFacts(workspaceId)
   const classified = classifyDedup(segmented, existing)
@@ -87,17 +108,37 @@ async function persistFacts(
     })
     if (rec !== null) added.push(rec)
   }
-  return { added, duplicates, conflicts }
+  // M5（F-14）：向量启用时，对新增事实批量写入 embeddings（逐个 embed + 入库；
+  // 单个失败不阻断入库——向量是增强项，失败时命令结果注明）。
+  let vectors = 0
+  if (vector?.enabled && added.length > 0) {
+    for (const rec of added) {
+      try {
+        const v = await vector.embed(rec.content)
+        await store.addFactEmbedding({
+          factId: rec.factId,
+          workspaceId,
+          content: rec.content,
+          vector: v,
+          model: vector.model,
+        })
+        vectors += 1
+      } catch (error) {
+        console.error(`[memory-pg] vector write failed for fact#${rec.factId}: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
+  }
+  return { added, duplicates, conflicts, vectors }
 }
 
 /** 组装一条命令结果文本。 */
 function summaryText(
   action: string,
   facts: DistilledFact[],
-  res: { added: FactRecord[]; duplicates: number; conflicts: SegmentedFact[] },
+  res: { added: FactRecord[]; duplicates: number; conflicts: SegmentedFact[]; vectors: number },
 ): string {
   const lines = [
-    `[memory-pg] ${action}: 提炼 ${facts.length} 条事实，新增 ${res.added.length} 条，重复跳过 ${res.duplicates} 条`,
+    `[memory-pg] ${action}: 提炼 ${facts.length} 条事实，新增 ${res.added.length} 条，重复跳过 ${res.duplicates} 条${res.vectors > 0 ? `，向量写入 ${res.vectors} 条` : ''}`,
   ]
   for (const f of facts) {
     lines.push(`- ${f.content}${f.tags.length ? ` [${f.tags.join(', ')}]` : ''}`)
@@ -163,7 +204,7 @@ export function registerMemoryCommands(ctx: Context, deps: CommandDeps): Array<(
         const meta = await deps.sessionMeta(invocation.agent)
         const context = await deps.contextProvider(invocation.agent)
         const facts = await distill(context, deps.distillCaller(invocation.agent))
-        const res = await persistFacts(deps.store, meta.workspaceId, meta.sessionId, facts)
+        const res = await persistFacts(deps.store, meta.workspaceId, meta.sessionId, facts, vectorOf(deps))
         return await finish(deps, invocation, summaryText('save', facts, res))
       } catch (error) {
         return await finish(deps, invocation, `[memory-pg] save failed: ${error instanceof Error ? error.message : String(error)}`, true)
@@ -181,7 +222,7 @@ export function registerMemoryCommands(ctx: Context, deps: CommandDeps): Array<(
         const meta = await deps.sessionMeta(invocation.agent)
         const context = await deps.contextProvider(invocation.agent)
         const facts = await distill(context, deps.distillCaller(invocation.agent))
-        const res = await persistFacts(deps.store, meta.workspaceId, meta.sessionId, facts)
+        const res = await persistFacts(deps.store, meta.workspaceId, meta.sessionId, facts, vectorOf(deps))
         return await finish(deps, invocation, summaryText('compact-save', facts, res))
       } catch (error) {
         return await finish(deps, invocation, `[memory-pg] compact-save failed: ${error instanceof Error ? error.message : String(error)}`, true)
@@ -233,7 +274,15 @@ export function registerMemoryCommands(ctx: Context, deps: CommandDeps): Array<(
         if (!parsed.ok) return await finish(deps, invocation, `[memory-pg] search: ${parsed.error}`, true)
         const q = parsed.query.trim()
         if (!q) return await finish(deps, invocation, '[memory-pg] search: 请输入搜索内容', true)
-        const hits: SearchHit[] = await deps.store.searchAndRerank(parsed.workspaceId, q, { limit: 10 })
+        // M5（F-14）：向量启用 → 混合检索（关键词 + 向量 RRF 合并）；否则纯关键词 + 重排。
+        const vector = vectorOf(deps)
+        const hits: SearchHit[] = vector?.enabled
+          ? await deps.store.searchHybrid(parsed.workspaceId, q, {
+              embedQuery: vector.embed,
+              limit: 10,
+              model: vector.model,
+            })
+          : await deps.store.searchAndRerank(parsed.workspaceId, q, { limit: 10 })
         if (hits.length === 0) {
           return await finish(deps, invocation, `[memory-pg] search "${q}": 无结果`)
         }

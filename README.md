@@ -7,7 +7,7 @@
 <!-- Hero -->
 <div align="center">
   <b style="font-size: 1.15em;">DSH（DeepSeek Harness）长期记忆插件：把会话对话提炼成结构化事实存入 PostgreSQL，支持跨项目检索记忆，让经验在会话/项目间延续。</b><br /><br />
-  <a href="https://www.npmjs.com/package/@GigaEphemeral/dsh-memory-pg"><img alt="npm version" src="https://img.shields.io/npm/v/@GigaEphemeral/dsh-memory-pg" /></a>
+  <a href="https://www.npmjs.com/package/@gigaephemeral/dsh-memory-pg"><img alt="npm version" src="https://img.shields.io/npm/v/@gigaephemeral/dsh-memory-pg" /></a>
   <a href="https://github.com/GigaEphemeral/dsh-memory-pg"><img alt="GitHub" src="https://img.shields.io/github/stars/GigaEphemeral/dsh-memory-pg" /></a>
   <a href="https://opensource.org/licenses/MIT"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-yellow.svg" /></a><br /><br />
   <a href="https://www.npmjs.com/package/@deepseek-ai/dsh?activeTab=versions"><img alt="依赖的 DSH 版本：0.1.5-rc.1" src="https://img.shields.io/badge/DSH-0.1.5--rc.1-4d6bfe" /></a><br /><br />
@@ -68,7 +68,7 @@ DSH 的会话上下文是有限资源。会话历史超出上下文窗口后会�
 **方式一：dsh 命令直接安装**（推荐）：
 
 ```sh
-dsh plugin --profile web add @GigaEphemeral/dsh-memory-pg@latest
+dsh plugin --profile web add @gigaephemeral/dsh-memory-pg@latest
 ```
 
 装完**重启 DSH web**（bundle 插件 host half 生效，非 HMR），然后**硬刷新浏览器**（Cmd/Ctrl+Shift+R）。
@@ -77,7 +77,7 @@ dsh plugin --profile web add @GigaEphemeral/dsh-memory-pg@latest
 
 ```text
 帮我安装 dsh-memory-pg 插件（DSH 长期记忆插件），步骤：
-1. 执行 dsh plugin --profile web add @GigaEphemeral/dsh-memory-pg@latest
+1. 执行 dsh plugin --profile web add @gigaephemeral/dsh-memory-pg@latest
 2. 完成后提醒我重启 DSH web（bundle 插件 host half 生效，非 HMR）并硬刷新浏览器
 遇到报错先查 https://github.com/GigaEphemeral/dsh-memory-pg README 的常见问题表。
 ```
@@ -95,7 +95,7 @@ cd dsh-memory-pg
 <summary><b>更新</b></summary>
 
 ```sh
-dsh plugin --profile web add @GigaEphemeral/dsh-memory-pg@latest
+dsh plugin --profile web add @gigaephemeral/dsh-memory-pg@latest
 ```
 
 装完重启 DSH web + 硬刷新浏览器即可。
@@ -107,7 +107,7 @@ dsh plugin --profile web add @GigaEphemeral/dsh-memory-pg@latest
 
 | 现象 | 原因与解决 |
 |---|---|
-| 提示 `dsh: command not found` | 先安装 DSH；或改用 `npx -y --package @deepseek-ai/dsh dsh plugin --profile web add @GigaEphemeral/dsh-memory-pg@latest` |
+| 提示 `dsh: command not found` | 先安装 DSH；或改用 `npx -y --package @deepseek-ai/dsh dsh plugin --profile web add @gigaephemeral/dsh-memory-pg@latest` |
 | 报「找不到 profile 目录」 | 先跑一次 `dsh web` 让它初始化 `~/.dsh/profiles/web` |
 | 装完命令/设置面板不出现 | bundle 插件 host half 需**重启 DSH web**（非 HMR），再硬刷新浏览器 |
 | 「测试数据库连接」失败 | 检查 PostgreSQL 是否运行、端口/账号/密码是否正确、库内是否已启用 `pg_trgm`（`CREATE EXTENSION IF NOT EXISTS pg_trgm;`） |
@@ -138,6 +138,14 @@ dsh plugin --profile web add @GigaEphemeral/dsh-memory-pg@latest
 **设置面板**：左下角设置 ⚙️ → 左侧「向量记忆」→ 配置数据库连接（Host/Port/User/Password/Name）与
 embedding 服务（可选），支持「测试数据库连接」与连接状态管理（重新探测 / 暂停 / 恢复 / 删除连接）。
 
+**向量检索（M5 F-14，默认关）**：在设置面板勾选「启用向量检索」并填好 Embedding Base URL / Model /
+向量维度（Ollama 兼容端点，如 `http://localhost:11434` + `bge-m3` + 1024）后：
+
+- `/memory-pg-save` 等入库命令会**同时写入向量**（embeddings 表，与事实行分离绑定）。
+- `/memory-pg-search` 自动切换为**混合检索**：关键词 + 向量双来源 **RRF 合并**（`1/(k+rank)`，k=60），
+  语义复述召回（如"怎么修登录 bug" → "authentication failure 根因"）比纯关键词更准。
+- 未启用向量时行为与之前完全一致（零 embedding 依赖）；embedding 服务不可用时检索自动降级纯关键词。
+
 ## 🛠️ 本地开发与构建
 
 > 代码相对路径约定：以下命令的**工作目录**分两类——**插件仓库根**（`<repo>`，即本仓库克隆目录）内执行
@@ -150,7 +158,7 @@ dsh-memory-pg/            # ← <repo>：构建/测试/打包在这里跑
 ├── tests/                # vitest 单元测试（workspace/store/distill/segment/rerank/prefs）
 ├── scripts/              # 一键安装脚本（install.ps1 / install.sh）
 ├── doc/                  # 立项/任务/开发经验等文档
-├── package.json          # 包名 @GigaEphemeral/dsh-memory-pg
+├── package.json          # 包名 @gigaephemeral/dsh-memory-pg
 ├── cordis.patch.yml      # 组合层挂载行（name = npm 包名，勿改）
 ├── tsdown.config.ts      # 构建配置（client bundle id = 包名，勿改）
 └── lib/                  # 构建产物（tsc + tsdown 输出，gitignore）
@@ -164,7 +172,7 @@ npm install          # 用 pnpm 亦可（pnpm 12；npm 10 arborist 在复杂 pee
 npm run typecheck    # tsc --noEmit
 npm run test         # vitest run（⚠️ fork worker 需要 danger-full-access 权限）
 npm run build        # → lib/（tsc + tsdown）
-npm pack --cache .\.npmcache   # → GigaEphemeral-dsh-memory-pg-0.1.0.tgz（npm cache 写用户目录会被沙箱拒，用工作区内 cache）
+npm pack --cache .\.npmcache   # → gigaephemeral-dsh-memory-pg-0.1.0.tgz（npm cache 写用户目录会被沙箱拒，用工作区内 cache）
 ```
 
 ### 隔离测试实例（不碰生产）
@@ -178,7 +186,7 @@ cd <harness>
 node --import tsx/esm apps/cli/src/bin.ts --profile m0test --from-default-profile web --dump-config
 
 # 3. 安装插件到隔离 profile（也可直接装本地 tgz）
-node --import tsx/esm apps/cli/src/bin.ts plugin --profile m0test add "<repo>\GigaEphemeral-dsh-memory-pg-0.1.0.tgz"
+node --import tsx/esm apps/cli/src/bin.ts plugin --profile m0test add "<repo>\gigaephemeral-dsh-memory-pg-0.1.0.tgz"
 
 # 4. 启动隔离实例（保持运行，danger-full-access；工作目录必须是 <harness>）
 Start-Process node -ArgumentList "--import","tsx/esm","apps/cli/src/bin.ts","--profile","m0test","--no-open","--port","3099" -WorkingDirectory "<harness>" -RedirectStandardOutput "<workspace>\.testhome\web-m0test.log" -RedirectStandardError "<workspace>\.testhome\web-m0test.err.log"
@@ -235,10 +243,12 @@ segment（过长递归分割 / 过短合并 / 精确+近似去重 / 冲突检测
    │
    ▼
 persist（写入 facts，按 workspace_id 隔离）
-   │
+   │        └─(向量开关开启)─▶ embed → embeddings 表（ref_table='facts' 绑定，失败不阻断入库）
    ▼
-/memory-pg-search [-p <项目>] <查询词> ──▶ searchFacts（关键词打分 + 重排）
-   │
+/memory-pg-search [-p <项目>] <查询词>
+   ├─ 向量关：searchFacts（关键词打分 + 重排）
+   ├─ 向量开：searchHybrid（关键词 + 向量双来源 → RRF 合并，k=60；
+   │          embedding 不可用自动降级纯关键词）
    ▼
 返回结果（命令卡片显示；跨项目检索命中目标 workspace）
 ```
@@ -248,6 +258,11 @@ persist（写入 facts，按 workspace_id 隔离）
 
 **连接管理**：`MemoryStore` 维护连接池状态（connected/paused/disconnected），支持真实可达性探测
 （SELECT 1）、暂停/恢复/删除连接（`/memory-pg/api/connection.*`）。
+
+**向量检索（M5 F-14）**：`EmbeddingClient`（`src/embedding.ts`）走 OpenAI 兼容 `/embeddings` 端点
+（Ollama 可用），返回维度必须等于配置 `vectorDim`（`assertDim` 显式报错，§2.2⑥）；向量写入
+`embeddings` 表（内容-向量分离，换模型只重算向量）；检索用 `searchHybrid`：关键词（limit×3）+
+向量（limit×3）双来源，`rrfScore = Σ 1/(k+rank)`（k=60）合并，双来源命中优先。
 
 ## 📚 详细文档
 

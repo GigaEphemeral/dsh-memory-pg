@@ -1,10 +1,10 @@
 <#
 .SYNOPSIS
-  一键安装 @GigaEphemeral/dsh-memory-pg 到指定 DSH profile。
+  一键安装 @gigaephemeral/dsh-memory-pg 到指定 DSH profile。
 
 .DESCRIPTION
   等价于手动执行：
-    dsh plugin --profile <Profile> add @GigaEphemeral/dsh-memory-pg@<Version>
+    dsh plugin --profile <Profile> add @gigaephemeral/dsh-memory-pg@<Version>
   bundle 插件的 host half 需要重启 DSH web 才生效（非 HMR）。
 
 .PARAMETER Profile
@@ -28,11 +28,11 @@ if (-not (Get-Command dsh -ErrorAction SilentlyContinue)) {
   Write-Error @'
 未找到 dsh 命令。请先安装 DSH 并确保 dsh 在 PATH 中；
 或改用 npx 一次性执行：
-  npx -y --package @deepseek-ai/dsh dsh plugin --profile web add @GigaEphemeral/dsh-memory-pg@latest
+  npx -y --package @deepseek-ai/dsh dsh plugin --profile web add @gigaephemeral/dsh-memory-pg@latest
 '@
 }
 
-$pkg = "@GigaEphemeral/dsh-memory-pg@$Version"
+$pkg = "@gigaephemeral/dsh-memory-pg@$Version"
 Write-Host "==> dsh plugin --profile $Profile add $pkg"
 dsh plugin --profile $Profile add $pkg
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

@@ -8,6 +8,7 @@
 import pg, { type Pool, type PoolClient } from 'pg'
 import { SCHEMA_SQL, EXTENSION_SQL } from './schema.ts'
 import { rerankHits, heuristicScore, type RelevanceScorer } from './rerank.ts'
+import { rrfMerge, type RankedSource } from './rrf.ts'
 
 /** 数据库连接配置（来自设置面板）。 */
 export interface DbConfig {
@@ -59,7 +60,7 @@ export interface FactInput {
 /** 关键词检索命中（facts + 匹配方式）。 */
 export interface SearchHit extends FactRecord {
   score: number
-  match: 'keyword' | 'tag' | 'rrf'
+  match: 'keyword' | 'tag' | 'vector' | 'rrf'
   kwScore?: number | null
 }
 
@@ -537,6 +538,112 @@ export class MemoryStore {
     const scorer = opts.scorer === undefined ? (q: string, h: SearchHit) => heuristicScore(q, h) : opts.scorer
     return rerankHits(query, hits, scorer)
   }
+
+  // ── M5（F-14）：可选向量检索 ──────────────────────────────────
+
+  /**
+   * 为一条事实写入向量（embeddings 表，ref_table='facts'）。
+   * 幂等：同 (ref_table, ref_id, embedding_model) 覆盖更新（换模型重算时同 id 新向量）。
+   * 向量须已归一化；维度与库中 vector 列不符会由 PG 显式报错。
+   */
+  async addFactEmbedding(input: {
+    factId: number
+    workspaceId: string
+    content: string
+    vector: ArrayLike<number>
+    model: string
+  }): Promise<void> {
+    const vectorLiteral = arrayToVectorLiteral(input.vector)
+    await this.poolOf().query(
+      `INSERT INTO embeddings (workspace_id, ref_table, ref_id, content_hash, embedding, embedding_model)
+       VALUES ($1, 'facts', $2, $3, ${vectorLiteral}, $4)
+       ON CONFLICT (ref_table, ref_id, embedding_model)
+       DO UPDATE SET embedding = EXCLUDED.embedding, content_hash = EXCLUDED.content_hash, updated_at = now()`,
+      [input.workspaceId, input.factId, contentHashOf(input.content), input.model],
+    )
+  }
+
+  /** 删除一条事实的向量（软删/取代时清理；可选）。 */
+  async removeFactEmbedding(factId: number): Promise<number> {
+    const r = await this.poolOf().query(
+      `DELETE FROM embeddings WHERE ref_table = 'facts' AND ref_id = $1`,
+      [factId],
+    )
+    return r.rowCount ?? 0
+  }
+
+  /**
+   * 向量检索：按 cosine 相似度取 workspace 内有效事实。
+   * queryVector 须已归一化；embedding 列维度须与查询向量一致（配置 vectorDim 校验过）。
+   */
+  async searchFactsVector(
+    workspaceId: string,
+    queryVector: ArrayLike<number>,
+    opts: { limit?: number; model?: string } = {},
+  ): Promise<SearchHit[]> {
+    const vectorLiteral = arrayToVectorLiteral(queryVector)
+    const modelClause = opts.model ? `AND e.embedding_model = $2` : ''
+    const params: unknown[] = [workspaceId]
+    if (opts.model) params.push(opts.model)
+    const r = await this.poolOf().query(
+      `SELECT f.*, 1 - (e.embedding <=> ${vectorLiteral}) AS vec_score
+       FROM facts f
+       JOIN embeddings e ON e.ref_table = 'facts' AND e.ref_id = f.fact_id
+       WHERE f.workspace_id = $1 AND f.deleted_at IS NULL AND f.status <> 'superseded'
+         ${modelClause}
+       ORDER BY e.embedding <=> ${vectorLiteral}
+       LIMIT ${opts.limit ?? 20}`,
+      params,
+    )
+    return r.rows.map(row => ({
+      ...rowToFact(row),
+      score: Number(row.vec_score ?? 0),
+      match: 'vector' as const,
+    }))
+  }
+
+  /**
+   * 混合检索（F-14 主入口）：关键词 + 向量双来源 → RRF 合并。
+   * embedQuery 由调用方注入（真实走 embedding 客户端；测试注入 fake）。
+   * 返回 RRF 合并后的 SearchHit（match='rrf'，score=rrfScore），不再二次重排。
+   */
+  async searchHybrid(
+    workspaceId: string,
+    query: string,
+    opts: {
+      embedQuery: (query: string) => Promise<ArrayLike<number>>
+      limit?: number
+      k?: number
+      model?: string
+      minScore?: number
+    },
+  ): Promise<SearchHit[]> {
+    const q = String(query ?? '').trim()
+    if (!q) return []
+    const limit = opts.limit ?? 10
+    // 双来源各取 limit*3 候选（RRF 需要足够深的 rank 才有意义）。
+    const kwHits = await this.searchFacts(workspaceId, q, { limit: limit * 3, minScore: opts.minScore })
+    let vecHits: SearchHit[] = []
+    try {
+      const queryVector = await opts.embedQuery(q)
+      vecHits = await this.searchFactsVector(workspaceId, queryVector, { limit: limit * 3, model: opts.model })
+    } catch {
+      // embedding 不可用时降级为纯关键词（R3 缓解：任一远端故障不影响本地）。
+      vecHits = []
+    }
+    if (vecHits.length === 0) {
+      return kwHits.slice(0, limit)
+    }
+    const keyOf = (h: SearchHit): number => h.factId
+    const kwRanked: Array<RankedSource<SearchHit>> = kwHits.map((h, i) => ({ rank: i + 1, item: h }))
+    const vecRanked: Array<RankedSource<SearchHit>> = vecHits.map((h, i) => ({ rank: i + 1, item: h }))
+    const merged = rrfMerge<SearchHit>([kwRanked, vecRanked], opts.k, keyOf)
+    return merged.slice(0, limit).map(entry => ({
+      ...entry.item,
+      score: entry.rrfScore,
+      match: 'rrf' as const,
+    }))
+  }
 }
 
 // ── 行映射辅助 ──────────────────────────────────────────────────
@@ -618,4 +725,13 @@ function safeJsonArray(value: string | unknown[]): unknown[] {
   } catch {
     return []
   }
+}
+
+/** 数组 → pgvector 字面量 '[1,2,3]'（带维度校验注释：维度不匹配由 PG 报错）。 */
+function arrayToVectorLiteral(vector: ArrayLike<number>): string {
+  const parts: string[] = []
+  for (let i = 0; i < vector.length; i += 1) {
+    parts.push(String(vector[i]))
+  }
+  return `'[${parts.join(',')}]'::vector`
 }

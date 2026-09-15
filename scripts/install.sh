@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 一键安装 @GigaEphemeral/dsh-memory-pg 到指定 DSH profile（macOS / Linux / Windows Git Bash）。
+# 一键安装 @gigaephemeral/dsh-memory-pg 到指定 DSH profile（macOS / Linux / Windows Git Bash）。
 # 用法：./scripts/install.sh [-p <profile>] [-v <version>]
 #   -p profile 默认 web；-v version 默认 latest
 set -euo pipefail
@@ -23,11 +23,11 @@ done
 if ! command -v dsh >/dev/null 2>&1; then
   echo "错误: 未找到 dsh 命令。请先安装 DSH 并确保 dsh 在 PATH 中；" >&2
   echo "或改用 npx 一次性执行:" >&2
-  echo "  npx -y --package @deepseek-ai/dsh dsh plugin --profile web add @GigaEphemeral/dsh-memory-pg@latest" >&2
+  echo "  npx -y --package @deepseek-ai/dsh dsh plugin --profile web add @gigaephemeral/dsh-memory-pg@latest" >&2
   exit 1
 fi
 
-PKG="@GigaEphemeral/dsh-memory-pg@${VERSION}"
+PKG="@gigaephemeral/dsh-memory-pg@${VERSION}"
 echo "==> dsh plugin --profile ${PROFILE} add ${PKG}"
 dsh plugin --profile "${PROFILE}" add "${PKG}"
 

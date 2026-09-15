@@ -140,8 +140,8 @@
 
 | 状态 | 任务 | 验收 | 备注 |
 |---|---|---|---|
-| [ ] | 设置面板：embedding URL 配置（Ollama 兼容，可选） | URL 配置 + 保存；默认关 | F-05 |
-| [ ] | 可选向量：embedding 客户端 + 维度校验 + 向量检索 + RRF 合并 | 开关开启才写入/查询；维度与库比对；RRF `1/(k+rank)` k=60 | F-14；默认关（D7）；§16.3 |
+| [x] | 设置面板：embedding URL 配置（Ollama 兼容，可选） | URL 配置 + 保存；默认关 | F-05；字段 M1 已建（embeddingBaseUrl/Model/vectorDim/vectorEnabled），M5 接线 `vectorRuntime` 读取生效 |
+| [x] | 可选向量：embedding 客户端 + 维度校验 + 向量检索 + RRF 合并 | 开关开启才写入/查询；维度与库比对；RRF `1/(k+rank)` k=60 | F-14；默认关（D7）；§16.3；✅ 75/75 单测 + typecheck/build 全绿 |
 | [x]→📋 | 记忆文件管理（compact 产物） | ~~列表/打开/删除生成的 md 文件~~ → **已迁 Future**（2026-09-14 用户指示） | F-16 关联 |
 | [x]→📋 | 记忆管理：列表/编辑/软删除 | ~~命令或 UI 查看/编辑/软删/恢复~~ → **已迁 Future**（2026-09-14 用户指示） | F-16 |
 | [x]→📋 | 上下文压力触发的自动注入 | ~~挂 `agent/pre-step` + `ctx.compaction` 压力读；注入预算裁剪~~ → **已迁 Future**（2026-09-14 用户指示） | F-17；D1（v1 已做显式，此为 v1.5/v2 项） |

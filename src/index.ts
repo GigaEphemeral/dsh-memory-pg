@@ -20,6 +20,7 @@ import { MemoryStore, type DbConfig } from './store.ts'
 import { registerMemoryCommands, type CommandDeps } from './commands.ts'
 import { registerMemoryTools } from './tools.ts'
 import type { LlmCaller } from './distill.ts'
+import { EmbeddingClient } from './embedding.ts'
 import { resolveWorkspace, baseOf, type WorkspaceView } from './workspace.ts'
 import { join } from 'node:path'
 
@@ -37,7 +38,7 @@ interface SettingsView {
   externalDisable?: boolean
 }
 
-export const name = '@GigaEphemeral/dsh-memory-pg'
+export const name = '@gigaephemeral/dsh-memory-pg'
 
 export function apply(ctx: Context): void {
   // ── 设置命名空间注册（可选服务：settings 缺失时插件照常工作） ─────
@@ -234,8 +235,54 @@ export function apply(ctx: Context): void {
       },
     })
 
-    // watch：设置提交后触发（M5 向量开关/工具门控在此扩展）。
-    scope.watch(() => {})
+    // ── M5（F-14）：可选向量运行时 ───────────────────────────────
+    // vectorEnabled 时懒加载 EmbeddingClient（OpenAI 兼容端点），供入库写向量 + 搜索混合检索。
+    // 未启用或 embedding 端点不可用时，deps.vector.enabled=false → 命令退化为纯关键词。
+    // 客户端缓存按 (baseUrl, model, dim) 元组重建：改设置保存后立即生效。
+    let embeddingClient: EmbeddingClient | null = null
+    let embeddingClientKey = ''
+    const vectorRuntime = (): import('./commands.ts').VectorRuntime | null => {
+      const prefs = scope.get()
+      if (!prefs.vectorEnabled) return null
+      const key = `${prefs.embeddingBaseUrl}|${prefs.embeddingModel}|${prefs.vectorDim}`
+      try {
+        if (embeddingClient === null || embeddingClientKey !== key) {
+          embeddingClient = new EmbeddingClient({
+            baseUrl: prefs.embeddingBaseUrl,
+            model: prefs.embeddingModel,
+            dim: prefs.vectorDim,
+          })
+          embeddingClientKey = key
+        }
+      } catch (error) {
+        console.error(`[memory-pg] embedding client init failed: ${error instanceof Error ? error.message : String(error)}`)
+        return null
+      }
+      return {
+        enabled: true,
+        model: prefs.embeddingModel,
+        embed: async (text: string) => {
+          if (embeddingClient === null) throw new Error('embedding client not initialized')
+          return embeddingClient.embedOne(text)
+        },
+      }
+    }
+
+    // watch：设置提交后触发（M5 向量开关/工具门控在此扩展；连接变更可在此重连）。
+    scope.watch(() => {
+      // 连接参数变更时重建连接池（保持与最新 prefs 一致）。
+      const prefs = scope.get()
+      const cfg = dbConfigOf(prefs)
+      const current = store.statusView()
+      if (current.status === 'connected') {
+        try {
+          store.connect(cfg)
+          store.migrate().catch((error) => console.error('[memory-pg] migrate failed', error))
+        } catch (error) {
+          console.error(`[memory-pg] reconnect failed: ${error instanceof Error ? error.message : String(error)}`)
+        }
+      }
+    })
 
     // ── M3：五条 /memory-pg-* 命令接线 ────────────────────────────
     // 依赖注入：store（上方已连接）、distill caller（ctx.llm.stream）、
@@ -400,6 +447,7 @@ export function apply(ctx: Context): void {
       workspaceLister,
       appendAssistant,
       memoryDir,
+      vectorProvider: vectorRuntime,
     }
     const disposers = registerMemoryCommands(ctx, deps)
 
