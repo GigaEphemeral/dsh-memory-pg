@@ -1,6 +1,6 @@
 {
   "name": "@gigaephemeral/dsh-memory-pg",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "DSH 长期记忆插件：对话提炼事实存入 PostgreSQL（分层四表），支持 /memory-pg-* 命令与设置面板配置。",
   "type": "module",
   "main": "lib/index.js",
